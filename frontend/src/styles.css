@@ -1,0 +1,884 @@
+
+/* Palette unique de l'application : le meme theme sombre et or que la page
+   d'accueil (Landing) est utilise partout, connecte ou non. Les anciennes
+   variables ink, paper, card, brass, border et text sont conservees (utilisees
+   dans tout le reste du fichier et dans les pages) mais pointent maintenant
+   vers cette meme palette land, une seule source de verite pour tout le
+   projet. */
+:root {
+  --land-bg: #1b1611;
+  --land-bg-2: #221b14;
+  --land-card: #2a2219;
+  --land-card-2: #332a1d;
+  --land-border: rgba(233, 201, 138, 0.16);
+  --land-gold: #c9a05a;
+  --land-gold-light: #e6c785;
+  --land-green: #7ea476;
+  --land-red: #c47a63;
+  --land-text: #f1ead9;
+  --land-text-muted: #b7ab95;
+
+  /* Alias historiques utilisés dans le reste de la feuille de style / des pages */
+  --ink-900: var(--land-bg-2);   /* surfaces sombres : bandeau, menu, login, calculatrice */
+  --ink-800: var(--land-card-2); /* survol / variante un peu plus claire */
+  --ink-700: var(--land-card-2);
+  --ink-500: var(--land-text-muted);
+  --paper: var(--land-bg);
+  --paper-line: var(--land-border);
+  --card: var(--land-card);
+  --brass: var(--land-gold);
+  --brass-light: var(--land-gold-light);
+  --credit: var(--land-green);
+  --debit: var(--land-red);
+  --border: var(--land-border);
+  --text: var(--land-text);
+  --text-muted: var(--land-text-muted);
+  --hover-tint: rgba(233, 201, 138, 0.08);
+
+  --font-display: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+
+  --radius: 6px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 14.5px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
+}
+
+/* --- Nouveau layout : bandeau + barre de menus horizontale (plus de menu à gauche) --- */
+.app-shell-top {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.title-strip {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  background: var(--ink-900);
+  color: var(--text);
+  padding: 8px 20px;
+  flex-wrap: wrap;
+}
+.title-strip-brand { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.title-strip-info {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  flex: 1;
+}
+.title-strip-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+.btn-tiny { padding: 4px 10px; font-size: 11.5px; color: var(--text); border-color: rgba(233,201,138,0.25); }
+.btn-tiny:hover { background: var(--hover-tint); }
+
+/* --- Barre de menus horizontale (Fichier / Affichages / Saisie / ...) --- */
+.menubar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: var(--ink-900);
+  border-bottom: 1px solid var(--border);
+  padding: 0 12px;
+}
+.menubar-anchor { position: relative; }
+.menubar-item {
+  background: transparent;
+  border: none;
+  padding: 9px 14px;
+  font-size: 13.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-body);
+}
+.menubar-item:hover, .menubar-item.open {
+  background: var(--brass);
+  color: var(--ink-900);
+}
+.menubar-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 260px;
+  background: var(--land-card);
+  border: 1px solid var(--border);
+  border-radius: 0 0 6px 6px;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.35);
+  z-index: 50;
+  padding: 6px;
+}
+.menubar-dropdown-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-family: var(--font-body);
+}
+.menubar-dropdown-item:hover:not(:disabled) { background: var(--hover-tint); }
+.menubar-dropdown-item:disabled { opacity: 0.4; cursor: not-allowed; }
+.menubar-dropdown-item .title { font-size: 13.5px; color: var(--text); }
+.menubar-dropdown-item .desc { font-size: 11.5px; color: var(--text-muted); }
+.menubar-sep { height: 1px; background: var(--border); margin: 5px 4px; }
+
+.main-full { width: 100%; max-width: 1400px; margin: 0 auto; }
+
+/* --- Ancien menu de gauche (conservé au cas où, non utilisé par défaut) --- */
+.sidebar {
+  background: var(--ink-900);
+  color: var(--text);
+  padding: 24px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+  padding-left: 6px;
+}
+
+.brand-seal {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1.5px solid var(--brass-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--brass-light);
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.brand-name {
+  font-family: var(--font-display);
+  font-size: 19px;
+  letter-spacing: 0.02em;
+  color: #f2ede0;
+}
+
+.brand-seal-img {
+  width: 42px;
+  height: 42px;
+  object-fit: contain;
+  flex-shrink: 0;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.35));
+  animation: brand-seal-sway 5s ease-in-out infinite;
+  transform-origin: 50% 60%;
+}
+/* Léger mouvement continu du logo, orienté vers la gauche (bascule
+   asymétrique : l'amplitude vers la gauche est plus marquée que vers la
+   droite), pour un effet vivant mais discret dans le bandeau/l'en-tête. */
+@keyframes brand-seal-sway {
+  0%   { transform: translateX(0) rotate(0deg); }
+  30%  { transform: translateX(-3px) rotate(-4deg); }
+  55%  { transform: translateX(-1px) rotate(-1.5deg); }
+  75%  { transform: translateX(1px) rotate(1.5deg); }
+  100% { transform: translateX(0) rotate(0deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .brand-seal-img { animation: none; }
+}
+
+/* Page d'accueil publique (avant connexion) — même thème sombre/or que le
+   reste de l'application désormais (variables définies globalement dans
+   :root ci-dessus, plus qu'une seule palette pour tout le projet). */
+.landing-shell {
+  position: relative;
+  min-height: 100vh;
+  background: var(--land-bg);
+  color: var(--land-text);
+  overflow: hidden;
+}
+.land-star { color: var(--land-gold); opacity: 0.35; position: absolute; }
+.land-star-1 { top: 90px; left: 6%; }
+.land-star-2 { top: 60%; left: 3%; opacity: 0.2; }
+.land-star-3 { top: 30%; right: 4%; opacity: 0.25; }
+
+.landing-header {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 48px;
+  border-bottom: 1px solid var(--land-border);
+}
+.landing-header .brand-name { color: var(--land-gold-light); }
+
+.landing-hero {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 56px;
+  max-width: 1220px;
+  margin: 0 auto;
+  padding: 72px 48px;
+}
+.landing-hero-text { flex: 1 1 460px; }
+.landing-hero-text h1 {
+  font-family: var(--font-display);
+  font-size: 44px;
+  line-height: 1.25;
+  color: var(--land-text);
+  margin: 0 0 22px;
+}
+.landing-accent { color: var(--land-gold); }
+.landing-hero-text p {
+  font-size: 15.5px;
+  line-height: 1.7;
+  color: var(--land-text-muted);
+  max-width: 540px;
+}
+.landing-cta { margin-top: 30px; }
+.btn-lg { padding: 14px 30px; font-size: 15px; }
+
+/* Logo mis en scène côté droit du hero — remplace l'ancien aperçu de tableau
+   de bord factice. Grand format, lueur dorée derrière, léger mouvement
+   continu (même esprit que le petit logo du bandeau, amplitude plus large
+   puisqu'il y a plus de place ici). */
+.landing-logo-showcase {
+  flex: 0 1 460px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 420px;
+}
+.landing-logo-glow {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 60% 60% at 50% 50%, rgba(201, 160, 90, 0.28) 0%, transparent 70%);
+  filter: blur(10px);
+  animation: landing-logo-pulse 5s ease-in-out infinite;
+  pointer-events: none;
+}
+.landing-logo-big {
+  position: relative;
+  width: min(360px, 80%);
+  filter: drop-shadow(0 24px 48px rgba(0, 0, 0, 0.5));
+  animation: landing-logo-float 6s ease-in-out infinite;
+}
+@keyframes landing-logo-float {
+  0%   { transform: translateY(0) rotate(0deg); }
+  30%  { transform: translateY(-14px) rotate(-2.5deg); }
+  60%  { transform: translateY(-4px) rotate(1.5deg); }
+  100% { transform: translateY(0) rotate(0deg); }
+}
+@keyframes landing-logo-pulse {
+  0%, 100% { opacity: 0.7; transform: scale(1); }
+  50%      { opacity: 1; transform: scale(1.08); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .landing-logo-big, .landing-logo-glow { animation: none; }
+}
+
+.landing-features {
+  position: relative;
+  z-index: 1;
+  background: var(--land-bg-2);
+  padding: 60px 48px 68px;
+  text-align: center;
+  border-top: 1px solid var(--land-border);
+}
+.landing-features-kicker {
+  font-size: 11.5px;
+  letter-spacing: 0.12em;
+  color: var(--land-text-muted);
+  margin-bottom: 10px;
+}
+.landing-features h2 {
+  font-family: var(--font-display);
+  color: var(--land-text);
+  margin: 0 0 40px;
+  font-size: 26px;
+}
+.landing-features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 22px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+.landing-feature-card {
+  background: var(--land-card);
+  border: 1px solid var(--land-border);
+  border-radius: 12px;
+  padding: 26px 20px;
+  text-align: left;
+}
+.landing-feature-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: rgba(201, 160, 90, 0.14);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--land-gold-light);
+  margin-bottom: 14px;
+}
+.landing-feature-card h3 {
+  color: var(--land-gold-light);
+  font-size: 15px;
+  margin: 0 0 8px;
+}
+.landing-feature-card p {
+  color: var(--land-text-muted);
+  font-size: 13.5px;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.landing-footer {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  padding: 26px;
+  background: var(--land-bg-2);
+  color: var(--land-text-muted);
+  font-size: 12.5px;
+  border-top: 1px solid var(--land-border);
+}
+
+@media (max-width: 900px) {
+  .landing-hero { flex-direction: column; padding: 44px 24px; }
+  .landing-header { padding: 16px 20px; }
+  .landing-hero-text h1 { font-size: 32px; }
+  .landing-mock { width: 100%; }
+  .land-star { display: none; }
+}
+
+
+
+.company-pill {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 18px;
+  font-size: 13px;
+}
+.company-pill .label { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.company-pill .value { color: var(--text); margin-top: 2px; }
+
+.nav-link {
+  display: block;
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 13.5px;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.nav-link:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+.nav-link.active { background: var(--brass); color: var(--ink-900); font-weight: 600; }
+
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.main {
+  max-width: 1180px;
+}
+.main-content {
+  padding: 32px 40px;
+}
+
+.page-header {
+  margin-bottom: 26px;
+}
+.page-header h1 {
+  font-family: var(--font-display);
+  font-size: 26px;
+  margin: 0 0 4px;
+  color: var(--text);
+}
+.page-header p { color: var(--text-muted); margin: 0; font-size: 13.5px; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 22px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.18);
+}
+
+.card h2 {
+  font-family: var(--font-display);
+  font-size: 17px;
+  margin: 0 0 14px;
+  color: var(--brass-light);
+}
+
+table.ledger {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+  border: 1px solid var(--border);
+}
+table.ledger th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-bottom: 2px solid var(--brass);
+  padding: 8px 10px;
+}
+table.ledger td {
+  padding: 9px 10px;
+  border: 1px solid var(--paper-line);
+}
+table.ledger tr:hover td { background: var(--hover-tint); }
+.num { font-variant-numeric: tabular-nums; text-align: right; font-family: var(--font-mono); }
+
+/* Ligne de saisie rapide façon tableur, dans l'en-tête du tableau du relevé :
+   champs compacts, sans les marges verticales habituelles des .field. */
+table.ledger td input,
+table.ledger td select {
+  padding: 5px 7px;
+  font-size: 12.5px;
+}
+/* La checkbox (sélection/suppression de ligne) ne doit jamais hériter du
+   padding ci-dessus : sur une checkbox native, du padding asymétrique peut la
+   pousser hors de sa cellule et lui donner l'air de "ne pas s'afficher". On
+   lui donne une taille et un centrage fixes à la place. */
+table.ledger td input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--brass);
+  vertical-align: middle;
+  display: inline-block;
+}
+.num.debit { color: var(--debit); }
+.num.credit { color: var(--credit); }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  border-radius: var(--radius);
+  padding: 9px 16px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: var(--font-body);
+}
+.btn-primary { background: var(--brass); color: var(--ink-900); }
+.btn-primary:hover { background: var(--brass-light); }
+.btn-brass { background: var(--brass); color: var(--ink-900); }
+.btn-brass:hover { background: var(--brass-light); }
+.btn-ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+.btn-ghost:hover { background: var(--hover-tint); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Boutons d'action compacts (icône seule + info-bulle) pour les colonnes
+   "Actions" des tableaux — évite qu'une ligne de 3 boutons texte
+   ("🖶 Imprimer" / "Modifier" / "Supprimer") ne prenne toute la largeur. */
+.row-actions { display: inline-flex; gap: 4px; align-items: center; }
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.btn-icon:hover { background: var(--hover-tint); }
+.btn-icon.danger:hover { background: rgba(196,122,99,0.15); border-color: var(--debit); color: var(--debit); }
+.btn-icon:disabled { opacity: 0.5; cursor: not-allowed; }
+
+input, select {
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--ink-800);
+  color: var(--text);
+  width: 100%;
+}
+input:focus, select:focus {
+  outline: 2px solid var(--brass-light);
+  outline-offset: 1px;
+  border-color: var(--brass);
+}
+label { font-size: 12.5px; color: var(--text-muted); display: block; margin-bottom: 4px; }
+.field { margin-bottom: 14px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+
+.badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-warn { background: rgba(201,160,90,0.15); color: var(--brass-light); }
+.badge-ok { background: rgba(126,164,118,0.15); color: var(--credit); }
+
+.alert {
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+.alert-error { background: rgba(196,122,99,0.12); color: var(--debit); border: 1px solid rgba(196,122,99,0.4); }
+.alert-notice { background: rgba(201,160,90,0.12); color: var(--brass-light); border: 1px solid rgba(201,160,90,0.4); }
+
+.login-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ink-900);
+  background-image: radial-gradient(circle at 20% 20%, rgba(201,160,90,0.14), transparent 40%);
+}
+.login-card {
+  background: var(--land-card);
+  border-radius: 10px;
+  padding: 40px 38px;
+  width: 380px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.login-card .brand { margin-bottom: 26px; justify-content: center; }
+.login-card .brand-name { color: var(--text); }
+
+.lines-entry-row {
+  display: grid;
+  grid-template-columns: 2fr 1.4fr 1fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.text-muted { color: var(--text-muted); }
+
+/* Impression (relevé bancaire, factures, écritures…) : on force une page A4,
+   quel que soit l'appareil (mobile/desktop), pour éviter le rendu "ticket de
+   caisse" tout étroit qu'on obtient si le navigateur imprime simplement la
+   largeur de l'écran d'origine. On masque tout le chrome applicatif
+   (bandeau, menu, barre d'outils, boutons "no-print") et on ne garde que le
+   contenu utile, avec un tableau resserré pour bien tenir sur la page. */
+@media print {
+  @page { size: A4; margin: 14mm; }
+  html, body {
+    width: 210mm;
+    background: #fff;
+    font-size: 11.5px;
+  }
+  .app-shell, .app-shell-top { display: block; }
+  .title-strip, .menubar, .toolbar, .no-print { display: none !important; }
+  .main-full, .main, main { max-width: none !important; width: 100% !important; margin: 0 !important; padding: 0 !important; }
+  .card { box-shadow: none; border: none; padding: 0; margin-bottom: 16px; page-break-inside: avoid; }
+  table.ledger { font-size: 10.5px; width: 100%; }
+  table.ledger th, table.ledger td { padding: 4px 6px; }
+  .editable-table-wrap { overflow: visible; }
+}
+.print-only { display: none; }
+@media print {
+  .print-only { display: block; }
+}
+
+/* En-tête d'impression partagé (voir PrintHeader.jsx) : société + IF en haut,
+   titre centré souligné, période, compte — reproduit la mise en page des
+   impressions du logiciel bureau (nom société / IF / "Du: ... au: ..."). */
+.print-header { margin-bottom: 16px; }
+.print-header-row { display: flex; justify-content: space-between; font-weight: 700; font-size: 13px; }
+.print-header-title { text-align: center; font-size: 16px; font-weight: 700; text-decoration: underline; margin: 10px 0 4px; letter-spacing: 0.02em; }
+.print-header-periode { text-align: center; font-size: 11.5px; color: #333; margin-bottom: 12px; }
+.print-header-compte { font-size: 12.5px; margin: 4px 0 10px; }
+table.ledger tfoot td { font-weight: 700; border-top: 2px solid var(--ink-900); }
+@media print {
+  .page-break { page-break-before: always; }
+}
+.mt-24 { margin-top: 24px; }
+.flex-between { display: flex; justify-content: space-between; align-items: center; }
+
+.toolbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 24px;
+}
+.toolbar-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  font-size: 11px;
+  font-family: var(--font-body);
+  color: var(--text);
+  cursor: pointer;
+}
+.toolbar-btn:hover:not(:disabled) { background: var(--hover-tint); border-color: var(--border); }
+.toolbar-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.toolbar-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 4px 8px;
+  background: var(--border);
+}
+
+.calculator-anchor {
+  position: absolute;
+  top: 100%;
+  right: 24px;
+  z-index: 40;
+  margin-top: 6px;
+}
+.calculator-panel {
+  width: 230px;
+  background: var(--ink-900);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0,0,0,0.5);
+  padding: 10px;
+  border: 1px solid var(--border);
+}
+.calculator-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--text);
+  font-size: 12px;
+  margin-bottom: 8px;
+  padding: 0 2px;
+}
+.calculator-close {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.calculator-display {
+  background: #120e0a;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 22px;
+  text-align: right;
+  padding: 12px 10px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.calculator-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+.calculator-key {
+  background: var(--land-card-2);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 12px 0;
+  font-size: 15px;
+  cursor: pointer;
+}
+.calculator-key:hover { background: #4a3c2c; }
+.calculator-key-op { background: var(--brass); color: var(--ink-900); }
+.calculator-key-op:hover { background: var(--brass-light); }
+.calculator-key-wide { grid-column: span 2; }
+
+
+/* Fenêtres modales (pop-ups de création de compte, alertes légales, menu de saisie...) */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+.modal-panel {
+  background: var(--land-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 22px 24px;
+  width: 100%;
+  max-width: 560px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  color: var(--text);
+}
+.modal-panel h2 { margin: 0 0 12px; }
+
+/* Menu contextuel (clic droit) sur les tableaux — Consultation des écritures */
+.ctx-item {
+  padding: 6px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ctx-item:hover { background: var(--hover-tint); }
+
+/* Écran de scan du relevé bancaire : aperçu du document à droite du
+   tableau de vérification, empilé en dessous sur petit écran. */
+@media (max-width: 900px) {
+  .scan-releve-split { flex-direction: column; }
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.modal-panel-wide { max-width: 760px; }
+
+.saisie-menu {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+.saisie-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.saisie-tile:hover { box-shadow: 0 8px 20px rgba(0,0,0,0.3); transform: translateY(-2px); border-color: var(--brass); }
+.saisie-tile .icon { font-size: 22px; }
+.saisie-tile .title { font-weight: 600; color: var(--text); }
+.saisie-tile .desc { font-size: 12px; color: var(--text-muted); }
+
+.account-picker { display: flex; gap: 6px; align-items: center; }
+.account-picker input { flex: 1; }
+
+.toolbar-dropdown-anchor { position: relative; }
+.toolbar-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 40;
+  margin-top: 6px;
+  min-width: 260px;
+  background: var(--land-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0,0,0,0.4);
+  padding: 6px;
+}
+.toolbar-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-family: var(--font-body);
+}
+.toolbar-dropdown-item:hover { background: var(--hover-tint); }
+.toolbar-dropdown-item .icon { font-size: 18px; }
+.toolbar-dropdown-item .title { display: block; font-weight: 600; color: var(--text); font-size: 13px; }
+.toolbar-dropdown-item .desc { display: block; font-size: 11px; color: var(--text-muted); }
+
+.editable-table-wrap { overflow-x: auto; max-width: 100%; }
+.editable-table { border-collapse: collapse; width: 100%; }
+.editable-table th, .editable-table td {
+  border: 1px solid var(--border);
+  padding: 4px;
+}
+.editable-table th { background: var(--ink-800); font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--text); }
+.editable-table td input {
+  width: 100%;
+  min-width: 90px;
+  border: none;
+  background: transparent;
+  padding: 4px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text);
+}
+.editable-table td input:focus { outline: 2px solid var(--brass); border-radius: 4px; }
+.editable-table .row-handle { text-align: center; background: var(--ink-800); }
+.mini-btn {
+  background: transparent;
+  border: none;
+  color: var(--debit);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+.mini-btn:hover { background: rgba(196,122,99,0.15); border-radius: 4px; }
