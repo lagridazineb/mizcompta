@@ -17,18 +17,51 @@ router.post('/companies/:companyId/entries/precheck', (req, res) => {
   res.json({ warnings });
 });
 
-// Liste des écritures d'une société (avec filtre optionnel par journal / exercice)
+// Liste des écritures d'une société (avec filtre optionnel par journal / exercice / période)
 router.get('/companies/:companyId/entries', (req, res) => {
-  const { journal_id, fiscal_year_id } = req.query;
+  const { journal_id, journal_ids, journal_codes, fiscal_year_id, date_debut, date_fin } = req.query;
   let query = 'SELECT * FROM journal_entries WHERE company_id = ?';
   const params = [req.params.companyId];
   if (journal_id) {
     query += ' AND journal_id = ?';
     params.push(journal_id);
   }
+  // Plusieurs journaux à la fois (écran "Journaux" : cases à cocher AN, JA,
+  // JB, JC, JP, JV, OD…) : soit par id (journal_ids=1,2,3), soit par code
+  // (journal_codes=JA,JB — plus pratique depuis le formulaire).
+  if (journal_ids) {
+    const ids = journal_ids.split(',').map((v) => v.trim()).filter(Boolean);
+    if (ids.length) {
+      query += ` AND journal_id IN (${ids.map(() => '?').join(',')})`;
+      params.push(...ids);
+    }
+  }
+  if (journal_codes) {
+    const codes = journal_codes.split(',').map((v) => v.trim()).filter(Boolean);
+    if (codes.length) {
+      const journalIdsFromCodes = db
+        .prepare(`SELECT id FROM journals WHERE company_id = ? AND code IN (${codes.map(() => '?').join(',')})`)
+        .all(req.params.companyId, ...codes)
+        .map((j) => j.id);
+      if (journalIdsFromCodes.length) {
+        query += ` AND journal_id IN (${journalIdsFromCodes.map(() => '?').join(',')})`;
+        params.push(...journalIdsFromCodes);
+      } else {
+        query += ' AND 1=0';
+      }
+    }
+  }
   if (fiscal_year_id) {
     query += ' AND fiscal_year_id = ?';
     params.push(fiscal_year_id);
+  }
+  if (date_debut) {
+    query += ' AND date_ecriture >= ?';
+    params.push(date_debut);
+  }
+  if (date_fin) {
+    query += ' AND date_ecriture <= ?';
+    params.push(date_fin);
   }
   query += ' ORDER BY date_ecriture DESC, id DESC';
   const entries = db.prepare(query).all(...params);
