@@ -6,17 +6,20 @@
    vers cette meme palette land, une seule source de verite pour tout le
    projet. */
 :root {
-  --land-bg: #1b1611;
-  --land-bg-2: #221b14;
-  --land-card: #2a2219;
-  --land-card-2: #332a1d;
-  --land-border: rgba(233, 201, 138, 0.16);
-  --land-gold: #c9a05a;
-  --land-gold-light: #e6c785;
-  --land-green: #7ea476;
-  --land-red: #c47a63;
-  --land-text: #f1ead9;
-  --land-text-muted: #b7ab95;
+  /* Thème clair : fond blanc partout (bandeau, cartes, menus...), texte foncé,
+     les accents or/vert/rouge sont conservés pour ne pas perdre les repères
+     visuels (boutons, débit/crédit, alertes). */
+  --land-bg: #ffffff;
+  --land-bg-2: #f5f5f4;
+  --land-card: #ffffff;
+  --land-card-2: #ececea;
+  --land-border: rgba(27, 22, 17, 0.14);
+  --land-gold: #b3873f;
+  --land-gold-light: #9c7534;
+  --land-green: #4f7a48;
+  --land-red: #a6432d;
+  --land-text: #1b1611;
+  --land-text-muted: #5b5548;
 
   /* Alias historiques utilisés dans le reste de la feuille de style / des pages */
   --ink-900: var(--land-bg-2);   /* surfaces sombres : bandeau, menu, login, calculatrice */
@@ -389,8 +392,8 @@ body {
 
 
 .company-pill {
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(27,22,17,0.05);
+  border: 1px solid rgba(27,22,17,0.1);
   border-radius: var(--radius);
   padding: 10px 12px;
   margin-bottom: 18px;
@@ -408,13 +411,13 @@ body {
   font-size: 13.5px;
   transition: background 0.12s ease, color 0.12s ease;
 }
-.nav-link:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+.nav-link:hover { background: rgba(27,22,17,0.06); color: var(--text); }
 .nav-link.active { background: var(--brass); color: var(--ink-900); font-weight: 600; }
 
 .sidebar-footer {
   margin-top: auto;
   padding-top: 16px;
-  border-top: 1px solid rgba(255,255,255,0.08);
+  border-top: 1px solid rgba(27,22,17,0.08);
   font-size: 12px;
   color: var(--text-muted);
 }
