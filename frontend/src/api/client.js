@@ -117,6 +117,10 @@ export const api = {
     const qs = new URLSearchParams(params).toString();
     return request(`/companies/${companyId}/reports/balance${qs ? `?${qs}` : ''}`);
   },
+  getJournalCentralisateur: (companyId, params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request(`/companies/${companyId}/reports/journal-centralisateur${qs ? `?${qs}` : ''}`);
+  },
   getGrandLivre: (companyId, accountId, params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return request(`/companies/${companyId}/reports/grand-livre/${accountId}${qs ? `?${qs}` : ''}`);
