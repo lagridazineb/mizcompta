@@ -40,6 +40,13 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
+// Compte caisse à proposer par défaut pour un règlement en espèces : le
+// 5161 (Caisses) exactement s'il existe, sinon le premier compte 516x
+// trouvé (secours si le plan comptable a été personnalisé).
+function findCaisseAccount(accounts) {
+  return accounts.find((a) => a.numero === '5161') || accounts.find((a) => a.numero.startsWith('516'));
+}
+
 const emptyForm = (type) => ({
   compte_numero: type === 'vente' ? '7111' : '6111',
   montant: '',
@@ -311,7 +318,17 @@ function FacturesContent() {
       </div>
 
       <div className="no-print" style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        <button className={`btn ${type === 'vente' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setType('vente')}>
+        <button
+          className={`btn ${type === 'vente' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => {
+            setType('vente');
+            // Une facture de vente ne peut pas être une immobilisation
+            // (les immobilisations sont enregistrées côté achats) : on
+            // repart d'un formulaire propre pour éviter qu'une coche
+            // "Immo." restée active depuis un achat ne s'applique à tort.
+            setForm(emptyForm('vente'));
+          }}
+        >
           Factures de Ventes
         </button>
         <button className={`btn ${type === 'achat' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setType('achat')}>
@@ -431,28 +448,33 @@ function FacturesContent() {
                 <label>Compte TVA</label>
                 <input disabled value={compteTvaAffiche} />
               </div>
-              <div className="field">
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <input
-                    type="checkbox"
-                    style={{ width: 'auto' }}
-                    checked={form.immo}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      // Bascule le compte par défaut vers la classe 2 (immobilisations)
-                      // ou revient au compte de charge/produit par défaut.
-                      const defautClasseActuelle = checked ? 2 : type === 'vente' ? 7 : 6;
-                      const compteActuel = accounts.find((a) => a.numero === form.compte_numero);
-                      const doitChanger = !compteActuel || compteActuel.classe !== defautClasseActuelle;
-                      updateForm({
-                        immo: checked,
-                        compte_numero: doitChanger ? (checked ? '211' : type === 'vente' ? '7111' : '6111') : form.compte_numero,
-                      });
-                    }}
-                  />
-                  Immo. (compte d'immobilisation, classe 2)
-                </label>
-              </div>
+              {/* Immo. : une immobilisation s'acquiert par une facture d'achat,
+                  jamais par une facture de vente — la case n'a donc de sens
+                  (et n'est proposée) que côté "Factures d'Achats". */}
+              {type === 'achat' && (
+                <div className="field">
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      style={{ width: 'auto' }}
+                      checked={form.immo}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        // Bascule le compte par défaut vers la classe 2 (immobilisations)
+                        // ou revient au compte de charge par défaut.
+                        const defautClasseActuelle = checked ? 2 : 6;
+                        const compteActuel = accounts.find((a) => a.numero === form.compte_numero);
+                        const doitChanger = !compteActuel || compteActuel.classe !== defautClasseActuelle;
+                        updateForm({
+                          immo: checked,
+                          compte_numero: doitChanger ? (checked ? '211' : '6111') : form.compte_numero,
+                        });
+                      }}
+                    />
+                    Immo. (compte d'immobilisation, classe 2)
+                  </label>
+                </div>
+              )}
             </div>
           </div>
 
@@ -510,9 +532,17 @@ function FacturesContent() {
                 checked={form.saisir_paiement}
                 onChange={(e) => {
                   const checked = e.target.checked;
-                  const compteAuto = checked && !form.paiement.compte_tresor_numero ? tresorerieAccounts.find((a) => a.numero.startsWith('516')) : null;
+                  // Mode par défaut de la section = "Espèce" -> on présélectionne
+                  // directement le compte 5161 (Caisse) plutôt qu'un compte 516x
+                  // quelconque.
+                  const compteAuto = checked && !form.paiement.compte_tresor_numero ? findCaisseAccount(tresorerieAccounts) : null;
+                  // Réglé en espèces dès la coche : la date de facturation suit
+                  // automatiquement la date de paiement (modifiable ensuite si
+                  // l'utilisateur change la date de paiement).
+                  const modeEspeceParDefaut = /esp[eè]ce/i.test(form.paiement.mode || '');
                   updateForm({
                     saisir_paiement: checked,
+                    date_facture: checked && modeEspeceParDefaut ? form.paiement.date_paiement : form.date_facture,
                     paiement: {
                       ...form.paiement,
                       montant_paye: checked ? ttc.toFixed(2) : form.paiement.montant_paye,
@@ -528,7 +558,18 @@ function FacturesContent() {
                 <div className="grid-3">
                   <div className="field">
                     <label>Date Paiement</label>
-                    <DateInputFR value={form.paiement.date_paiement} onChange={(e) => updatePaiement({ date_paiement: e.target.value })} />
+                    <DateInputFR
+                      value={form.paiement.date_paiement}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        updatePaiement({ date_paiement: value });
+                        // Paiement en espèces : la date de facturation suit
+                        // automatiquement la date de paiement.
+                        if (/esp[eè]ce/i.test(form.paiement.mode || '')) {
+                          updateForm({ date_facture: value });
+                        }
+                      }}
+                    />
                   </div>
                   <div className="field">
                     <label>Mt. Payé</label>
@@ -539,12 +580,22 @@ function FacturesContent() {
                     <select
                       value={form.paiement.mode}
                       onChange={(e) => {
-                        const modeInfo = MODES_PAIEMENT.find((m) => m.label === e.target.value);
-                        // Bascule automatiquement vers la caisse (espèces) ou la banque
-                        // (chèque/virement/…), comme sur le logiciel bureau — l'utilisateur
-                        // garde la main pour choisir un autre compte si plusieurs banques existent.
-                        const compteAuto = tresorerieAccounts.find((a) => a.numero.startsWith(modeInfo?.prefixeCompte || '514'));
-                        updatePaiement({ mode: e.target.value, compte_tresor_numero: compteAuto ? compteAuto.numero : form.paiement.compte_tresor_numero });
+                        const value = e.target.value;
+                        const modeInfo = MODES_PAIEMENT.find((m) => m.label === value);
+                        const isEspece = /esp[eè]ce/i.test(value);
+                        // Bascule automatiquement vers la caisse (espèces : compte 5161
+                        // précisément) ou la banque (chèque/virement/…), comme sur le
+                        // logiciel bureau — l'utilisateur garde la main pour choisir un
+                        // autre compte si plusieurs banques existent.
+                        const compteAuto = isEspece
+                          ? findCaisseAccount(tresorerieAccounts)
+                          : tresorerieAccounts.find((a) => a.numero.startsWith(modeInfo?.prefixeCompte || '514'));
+                        updatePaiement({ mode: value, compte_tresor_numero: compteAuto ? compteAuto.numero : form.paiement.compte_tresor_numero });
+                        // Réglé en espèces : la date de facturation s'aligne
+                        // immédiatement sur la date de paiement déjà saisie.
+                        if (isEspece) {
+                          updateForm({ date_facture: form.paiement.date_paiement });
+                        }
                       }}
                     >
                       {MODES_PAIEMENT.map((m) => (
