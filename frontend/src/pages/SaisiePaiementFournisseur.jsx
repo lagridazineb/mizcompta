@@ -54,7 +54,8 @@ export default function SaisiePaiementFournisseur() {
   function handleModeChange(value) {
     setModePaiement(value);
     if (value === 'Espèce') {
-      const caisse = accounts.find((a) => a.numero.startsWith('516'));
+      // Compte 5161 (Caisse) précisément, sinon le premier 516x du plan comptable.
+      const caisse = accounts.find((a) => a.numero === '5161') || accounts.find((a) => a.numero.startsWith('516'));
       if (caisse) setCompteTresorNumero(caisse.numero);
     } else if (value === 'Chèque') {
       // Le chèque se comporte comme les autres modes : on présélectionne la
