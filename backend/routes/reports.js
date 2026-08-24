@@ -106,6 +106,56 @@ router.get('/companies/:companyId/reports/bilan-detaille', (req, res) => {
 });
 
 
+// État "Journal Centralisateur" : pour chaque journal, le total des débits
+// et crédits par compte mouvementé sur la période — la vue de synthèse qui
+// centralise tous les journaux auxiliaires (Achats, Ventes, Banque,
+// Caisse…) avant le report à la balance générale.
+router.get('/companies/:companyId/reports/journal-centralisateur', (req, res) => {
+  const companyId = req.params.companyId;
+  const { date_debut, date_fin, fiscal_year_id } = req.query;
+
+  let dateFilter = '';
+  const params = [companyId];
+  if (fiscal_year_id) {
+    dateFilter += ' AND je.fiscal_year_id = ?';
+    params.push(fiscal_year_id);
+  }
+  if (date_debut) {
+    dateFilter += ' AND je.date_ecriture >= ?';
+    params.push(date_debut);
+  }
+  if (date_fin) {
+    dateFilter += ' AND je.date_ecriture <= ?';
+    params.push(date_fin);
+  }
+
+  const journaux = db.prepare('SELECT id, code, libelle FROM journals WHERE company_id = ? ORDER BY code').all(companyId);
+
+  const lignesStmt = db.prepare(`
+    SELECT a.numero AS compte_numero, a.intitule AS compte_intitule,
+           COALESCE(SUM(jl.debit), 0) AS total_debit,
+           COALESCE(SUM(jl.credit), 0) AS total_credit
+    FROM journal_lines jl
+    JOIN journal_entries je ON je.id = jl.entry_id
+    JOIN accounts a ON a.id = jl.account_id
+    WHERE je.company_id = ? AND je.journal_id = ? ${dateFilter}
+    GROUP BY a.id
+    ORDER BY a.numero
+  `);
+
+  const centralisateur = journaux.map((j) => {
+    const lignes = lignesStmt.all(companyId, j.id, ...params.slice(1));
+    const totalDebit = lignes.reduce((s, l) => s + l.total_debit, 0);
+    const totalCredit = lignes.reduce((s, l) => s + l.total_credit, 0);
+    return { journal: j, lignes, total_debit: totalDebit, total_credit: totalCredit };
+  });
+
+  const totalGeneralDebit = centralisateur.reduce((s, j) => s + j.total_debit, 0);
+  const totalGeneralCredit = centralisateur.reduce((s, j) => s + j.total_credit, 0);
+
+  res.json({ journaux: centralisateur, total_debit: totalGeneralDebit, total_credit: totalGeneralCredit });
+});
+
 // Balance générale : cumul débit/crédit et solde par compte, sur une période
 router.get('/companies/:companyId/reports/balance', (req, res) => {
   const { fiscal_year_id, date_debut, date_fin } = req.query;
