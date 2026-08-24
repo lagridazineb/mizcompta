@@ -256,6 +256,12 @@ function createFactureRecord(companyId, userId, payload) {
   if (immo && contrepartie.classe !== 2) {
     throw httpError(422, 'Pour une facture immobilisée, le compte choisi doit être un compte de classe 2 (immobilisation).');
   }
+  // Une immobilisation s'acquiert par une facture d'achat, jamais par une
+  // facture de vente : on le refuse aussi côté serveur, pas seulement en
+  // masquant la case dans l'interface.
+  if (immo && type !== 'achat') {
+    throw httpError(422, "La case Immo. (compte d'immobilisation) n'est valable que pour une facture d'achat.");
+  }
 
   const montantSaisi = round2(montant);
   const tauxTva = appliquer_tva ? Number(taux_tva) || 0 : 0;
