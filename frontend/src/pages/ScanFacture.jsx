@@ -4,7 +4,7 @@ import { api } from '../api/client';
 import { useCompany } from '../CompanyContext';
 import CreateAccountModal from '../components/CreateAccountModal';
 import FacturesLignesTable from '../components/FacturesLignesTable';
-import { extractDocument } from '../utils/documentText';
+import { extractDocument, extractDocumentPages } from '../utils/documentText';
 import { extractFactureFields } from '../utils/factureExtract';
 import { extractReleveDocument } from '../utils/releveExtract';
 import { TAUX_TVA } from '../constants/tauxTva';
@@ -44,20 +44,26 @@ const emptyFactureForm = () => ({
 });
 
 // --- Onglet Facture d'achat / de vente --------------------------------------
+// --- Onglet Facture d'achat / de vente --------------------------------------
+// Prend en charge le scan de PLUSIEURS factures à la fois : soit plusieurs
+// fichiers sélectionnés d'un coup, soit un seul PDF de plusieurs pages
+// contenant une facture par page (cas très courant d'un lot scanné en une
+// fois). Chaque facture détectée devient une entrée d'une file d'attente
+// ("Facture 1/9", "2/9"…) que l'on parcourt et corrige avant d'enregistrer —
+// au lieu de ne jamais pouvoir traiter qu'un seul document à la fois.
 function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
   const [tiersList, setTiersList] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [factures, setFactures] = useState([]);
-  const [file, setFile] = useState(null);
+  const [files, setFiles] = useState([]);
   const [status, setStatus] = useState('');
   const [progress, setProgress] = useState(0);
   const [scanning, setScanning] = useState(false);
-  const [rawText, setRawText] = useState('');
-  const [form, setForm] = useState(emptyFactureForm());
-  const [detected, setDetected] = useState(null); // { nom, ice } quand aucun tiers existant ne correspond
+  const [queue, setQueue] = useState([]); // [{ id, source, form, rawText, detected }]
+  const [currentIndex, setCurrentIndex] = useState(0);
   const [showCreateTiers, setShowCreateTiers] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [savingAll, setSavingAll] = useState(false);
   const [error, setError] = useState('');
 
   const tiersType = mode === 'vente' ? 'client' : 'fournisseur';
@@ -76,50 +82,45 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
 
   useEffect(() => {
     load();
-    setForm(emptyFactureForm());
-    setFile(null);
-    setRawText('');
-    setDetected(null);
-    setSaved(false);
+    setFiles([]);
+    setQueue([]);
+    setCurrentIndex(0);
     setError('');
   }, [load, mode]);
 
   const tresorerieAccounts = useMemo(() => accounts.filter((a) => a.classe === 5 && a.numero.startsWith('51')), [accounts]);
 
-  async function handleAnalyse() {
-    if (!file) return;
-    setError('');
-    setSaved(false);
-    setScanning(true);
-    setStatus('Préparation…');
-    setProgress(0);
-    try {
-      const { text, rows } = await extractDocument(file, { onStatus: setStatus, onProgress: setProgress });
-      setRawText(text);
-      const fields = extractFactureFields(text, rows);
+  // Construit une entrée de file d'attente (formulaire + libellé de source)
+  // à partir des champs détectés sur UNE page/UN document.
+  function buildQueueItem(fields, rawText, source) {
+    const iceCible = mode === 'vente' ? fields.ice_client : fields.ice_emetteur;
+    const nomCible = mode === 'vente' ? fields.nom_client : fields.nom_emetteur;
+    const match =
+      tiersList.find((t) => t.ice && iceCible && t.ice.replace(/\s/g, '') === iceCible) ||
+      tiersList.find((t) => nomCible && t.nom.trim().toLowerCase() === nomCible.trim().toLowerCase());
+    const modeInfo = MODES_PAIEMENT.find((m) => m.label.toLowerCase() === (fields.mode_paiement || '').toLowerCase());
+    const compteAuto = modeInfo
+      ? accounts.find((a) => a.classe === 5 && a.numero.startsWith(modeInfo.prefixeCompte === '516' ? '516' : modeInfo.prefixeCompte))
+      : null;
 
-      const iceCible = mode === 'vente' ? fields.ice_client : fields.ice_emetteur;
-      const nomCible = mode === 'vente' ? fields.nom_client : fields.nom_emetteur;
-      const match =
-        tiersList.find((t) => t.ice && iceCible && t.ice.replace(/\s/g, '') === iceCible) ||
-        tiersList.find((t) => nomCible && t.nom.trim().toLowerCase() === nomCible.trim().toLowerCase());
-
-      // Compte Trésor proposé automatiquement selon le mode de règlement détecté
-      // (espèces -> caisse 516x, chèque/virement/… -> banque 514x).
-      const modeInfo = MODES_PAIEMENT.find((m) => m.label.toLowerCase() === (fields.mode_paiement || '').toLowerCase());
-      const compteAuto = modeInfo ? accounts.find((a) => a.classe === 5 && a.numero.startsWith(modeInfo.prefixeCompte)) : null;
-
-      setForm((f) => ({
-        ...f,
-        tiers_id: match ? String(match.id) : f.tiers_id,
-        date_facture: fields.date_facture || f.date_facture,
-        numero_piece: fields.numero_piece || f.numero_piece,
-        montant: fields.montant_ht != null ? String(fields.montant_ht) : f.montant,
-        taux_tva: fields.taux_tva || f.taux_tva,
-        mode_paiement: fields.mode_paiement || f.mode_paiement,
-        piece_reglement: fields.piece_reglement || f.piece_reglement,
-        compte_tresor_numero: compteAuto ? compteAuto.numero : f.compte_tresor_numero,
-        libelle: f.libelle || `FA N°: ${fields.numero_piece || ''} - ${nomCible || ''}`.trim(),
+    return {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      source,
+      rawText,
+      detected: !match && (nomCible || iceCible) ? { nom: nomCible || '', ice: iceCible || '' } : null,
+      status: 'pending', // pending | saved | error
+      errorMsg: '',
+      form: {
+        ...emptyFactureForm(),
+        tiers_id: match ? String(match.id) : '',
+        date_facture: fields.date_facture || '',
+        numero_piece: fields.numero_piece || '',
+        montant: fields.montant_ht != null ? String(fields.montant_ht) : '',
+        taux_tva: fields.taux_tva || '20',
+        mode_paiement: fields.mode_paiement || '',
+        piece_reglement: fields.piece_reglement || '',
+        compte_tresor_numero: compteAuto ? compteAuto.numero : '',
+        libelle: `FA N°: ${fields.numero_piece || ''} - ${nomCible || ''}`.trim(),
         detecte: {
           nom: nomCible,
           ice: iceCible,
@@ -128,103 +129,239 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
           montant_tva: fields.montant_tva,
           montant_ttc: fields.montant_ttc,
         },
-      }));
-      setDetected(!match && (nomCible || iceCible) ? { nom: nomCible || '', ice: iceCible || '' } : null);
+      },
+    };
+  }
+
+  async function handleAnalyse() {
+    if (files.length === 0) return;
+    setError('');
+    setScanning(true);
+    setQueue([]);
+    setCurrentIndex(0);
+    const nouvelleFile = [];
+    try {
+      for (let fi = 0; fi < files.length; fi += 1) {
+        const file = files[fi];
+        setStatus(`Fichier ${fi + 1}/${files.length} : ${file.name}…`);
+        // Une page = une facture (lot de plusieurs factures scannées dans un
+        // seul PDF, ou plusieurs pages d'une même facture — dans ce dernier
+        // cas il suffit de fusionner à la main les entrées superflues avant
+        // d'enregistrer).
+        const pages = await extractDocumentPages(file, {
+          onStatus: (s) => setStatus(`Fichier ${fi + 1}/${files.length} (${file.name}) — ${s}`),
+          onProgress: setProgress,
+        });
+        pages.forEach((page, pi) => {
+          const fields = extractFactureFields(page.text, page.rows);
+          // Ignore les pages manifestement vides (page blanche de séparation,
+          // page de garde…) : ni montant, ni numéro, ni nom détecté.
+          const vide = fields.montant_ht == null && fields.montant_ttc == null && !fields.numero_piece && !fields.nom_emetteur;
+          if (vide && pages.length > 1) return;
+          const source = files.length > 1 || pages.length > 1 ? `${file.name}${pages.length > 1 ? ` — page ${pi + 1}/${pages.length}` : ''}` : file.name;
+          nouvelleFile.push(buildQueueItem(fields, page.text, source));
+        });
+      }
+      if (nouvelleFile.length === 0) {
+        setError("Aucune facture n'a pu être détectée sur le(s) document(s) fourni(s).");
+      }
+      setQueue(nouvelleFile);
     } catch (err) {
       setError(`Échec de la lecture du document : ${err.message}`);
     } finally {
       setScanning(false);
       setStatus('');
+      setProgress(0);
     }
   }
 
-  const montant = Number(form.montant) || 0;
-  const taux = Number(form.taux_tva) || 0;
-  const tva = round2((montant * taux) / 100);
-  const ttc = round2(montant + tva);
+  const current = queue[currentIndex] || null;
 
-  async function handleSave(e) {
-    e.preventDefault();
-    setError('');
+  function updateCurrentForm(patch) {
+    setQueue((q) => q.map((item, i) => (i === currentIndex ? { ...item, form: { ...item.form, ...patch } } : item)));
+  }
+
+  function itemMontants(item) {
+    const montant = Number(item.form.montant) || 0;
+    const taux = Number(item.form.taux_tva) || 0;
+    const tva = round2((montant * taux) / 100);
+    const ttc = round2(montant + tva);
+    return { montant, taux, tva, ttc };
+  }
+
+  async function saveItem(index) {
+    const item = queue[index];
+    if (!item || item.status === 'saved') return true;
     if (!activeFiscalYear) {
       setError('Aucun exercice comptable actif pour cette société.');
-      return;
+      return false;
     }
-    if (!form.tiers_id) {
-      setError(`Sélectionnez ou créez le ${tiersType === 'client' ? 'client' : 'fournisseur'} détecté avant d'enregistrer.`);
-      return;
+    if (!item.form.tiers_id) {
+      setError(`Sélectionnez ou créez le ${tiersType === 'client' ? 'client' : 'fournisseur'} détecté avant d'enregistrer (facture : ${item.source}).`);
+      return false;
     }
-    if (!form.numero_piece.trim()) {
-      setError('Le numéro de facture est obligatoire.');
-      return;
+    if (!item.form.numero_piece.trim()) {
+      setError(`Le numéro de facture est obligatoire (facture : ${item.source}).`);
+      return false;
     }
-    setSaving(true);
+    const { montant, taux, ttc } = itemMontants(item);
     try {
       await api.createFacture(activeCompany.id, {
         type: mode,
-        tiers_id: Number(form.tiers_id),
+        tiers_id: Number(item.form.tiers_id),
         fiscal_year_id: activeFiscalYear.id,
-        date_facture: form.date_facture || new Date().toISOString().slice(0, 10),
-        numero_piece: form.numero_piece,
-        libelle: form.libelle || `${mode === 'vente' ? 'Vente' : 'Achat'} (scan facture)`,
+        date_facture: item.form.date_facture || new Date().toISOString().slice(0, 10),
+        numero_piece: item.form.numero_piece,
+        libelle: item.form.libelle || `${mode === 'vente' ? 'Vente' : 'Achat'} (scan facture)`,
         compte_numero: mode === 'vente' ? '7111' : '6111',
         montant,
         montant_mode: 'ht',
         appliquer_tva: taux > 0,
         taux_tva: taux,
         immo: false,
-        jours: form.jours || 60,
+        jours: item.form.jours || 60,
         paiement:
-          form.mode_paiement && form.compte_tresor_numero
+          item.form.mode_paiement && item.form.compte_tresor_numero
             ? {
-                date_paiement: form.date_facture || new Date().toISOString().slice(0, 10),
+                date_paiement: item.form.date_facture || new Date().toISOString().slice(0, 10),
                 montant_paye: ttc,
-                mode: form.mode_paiement,
-                compte_tresor_numero: form.compte_tresor_numero,
-                piece: form.piece_reglement,
+                mode: item.form.mode_paiement,
+                compte_tresor_numero: item.form.compte_tresor_numero,
+                piece: item.form.piece_reglement,
               }
             : null,
       });
-      setSaved(true);
-      setForm(emptyFactureForm());
-      setFile(null);
-      setRawText('');
-      setDetected(null);
-      load();
+      setQueue((q) => q.map((it, i) => (i === index ? { ...it, status: 'saved', errorMsg: '' } : it)));
+      return true;
     } catch (err) {
-      setError(err.message);
+      setQueue((q) => q.map((it, i) => (i === index ? { ...it, status: 'error', errorMsg: err.message } : it)));
+      return false;
+    }
+  }
+
+  async function handleSaveCurrent(e) {
+    e.preventDefault();
+    setError('');
+    setSaving(true);
+    try {
+      const ok = await saveItem(currentIndex);
+      if (ok) {
+        load();
+        // Avance automatiquement vers la prochaine facture non enregistrée.
+        const next = queue.findIndex((it, i) => i > currentIndex && it.status !== 'saved');
+        if (next !== -1) setCurrentIndex(next);
+      }
     } finally {
       setSaving(false);
     }
   }
 
+  // Enregistre en une fois toutes les factures de la file qui ont au moins
+  // un fournisseur/client et un numéro de facture — répond directement à la
+  // demande "elles doivent être scannées toutes en même temps" plutôt que de
+  // devoir cliquer "Enregistrer" facture par facture.
+  async function handleSaveAll() {
+    setError('');
+    setSavingAll(true);
+    try {
+      for (let i = 0; i < queue.length; i += 1) {
+        if (queue[i].status === 'saved') continue;
+        if (!queue[i].form.tiers_id || !queue[i].form.numero_piece.trim()) continue; // laissées pour correction manuelle
+        // eslint-disable-next-line no-await-in-loop
+        await saveItem(i);
+      }
+      load();
+    } finally {
+      setSavingAll(false);
+    }
+  }
+
+  const nbEnregistrees = queue.filter((it) => it.status === 'saved').length;
+  const nbIncompletes = queue.filter((it) => it.status !== 'saved' && (!it.form.tiers_id || !it.form.numero_piece.trim())).length;
+
   return (
     <div>
       <div className="card no-print">
-        <h2>1. Scanner le document</h2>
+        <h2>1. Scanner le(s) document(s)</h2>
         <p className="text-muted">
-          Fonctionne avec une <strong>photo/image</strong> ou un <strong>PDF</strong> (facture générée par ordinateur ou
-          scannée). La lecture se fait entièrement dans votre navigateur — aucun fichier n'est envoyé à un service externe.
+          Fonctionne avec une ou plusieurs <strong>photos/images</strong> ou <strong>PDF</strong> (facture générée par
+          ordinateur ou scannée) — <strong>sélectionnez plusieurs fichiers, ou un seul PDF de plusieurs pages avec une
+          facture par page</strong> : chacune sera détectée séparément. La lecture se fait entièrement dans votre
+          navigateur — aucun fichier n'est envoyé à un service externe.
         </p>
         <input
           type="file"
+          multiple
           accept="image/*,.pdf,application/pdf"
           onChange={(e) => {
-            setFile(e.target.files?.[0] || null);
-            setSaved(false);
+            setFiles(Array.from(e.target.files || []));
+            setQueue([]);
+            setCurrentIndex(0);
           }}
         />
-        <button className="btn btn-primary mt-24" onClick={handleAnalyse} disabled={!file || scanning}>
-          {scanning ? `Analyse en cours… ${progress ? `${progress}%` : ''}` : 'Analyser le document'}
+        {files.length > 0 && <p className="text-muted" style={{ marginTop: 4 }}>{files.length} fichier(s) sélectionné(s).</p>}
+        <button className="btn btn-primary mt-24" onClick={handleAnalyse} disabled={files.length === 0 || scanning}>
+          {scanning ? `Analyse en cours… ${progress ? `${progress}%` : ''}` : `Analyser ${files.length > 1 ? `les ${files.length} documents` : 'le document'}`}
         </button>
         {scanning && status && <p className="text-muted" style={{ marginTop: 8 }}>{status}</p>}
         {error && <div className="alert alert-error">{error}</div>}
-        {saved && <div className="alert alert-notice">Facture enregistrée avec succès.</div>}
       </div>
 
-      {rawText && (
+      {queue.length > 0 && (
         <div className="card no-print">
-          <h2>2. Vérifier et compléter</h2>
+          <div className="flex-between">
+            <h2 style={{ margin: 0 }}>
+              2. Vérifier et compléter — Facture {currentIndex + 1} / {queue.length}
+            </h2>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={currentIndex === 0}
+                onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))}
+              >
+                ← Précédente
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={currentIndex >= queue.length - 1}
+                onClick={() => setCurrentIndex((i) => Math.min(queue.length - 1, i + 1))}
+              >
+                Suivante →
+              </button>
+            </div>
+          </div>
+
+          {/* Résumé de la file : statut de chaque facture détectée */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '10px 0' }}>
+            {queue.map((it, i) => (
+              <button
+                key={it.id}
+                type="button"
+                onClick={() => setCurrentIndex(i)}
+                title={it.source}
+                className="btn btn-ghost"
+                style={{
+                  padding: '3px 9px',
+                  fontSize: 12,
+                  border: i === currentIndex ? '1px solid var(--gold)' : '1px solid var(--border)',
+                  background: it.status === 'saved' ? 'rgba(126,164,118,0.18)' : it.status === 'error' ? 'rgba(196,122,99,0.18)' : 'transparent',
+                }}
+              >
+                {it.status === 'saved' ? '✓ ' : it.status === 'error' ? '⚠ ' : ''}
+                {i + 1}
+              </button>
+            ))}
+          </div>
+          <p className="text-muted" style={{ fontSize: 12.5 }}>
+            {nbEnregistrees} / {queue.length} déjà enregistrée(s)
+            {nbIncompletes > 0 && ` — ${nbIncompletes} à compléter (${tiersType === 'client' ? 'client' : 'fournisseur'} ou N° de facture manquant)`}.
+          </p>
+          {current?.status === 'saved' && <div className="alert alert-notice">Cette facture a été enregistrée.</div>}
+          {current?.status === 'error' && <div className="alert alert-error">Échec de l'enregistrement : {current.errorMsg}</div>}
+
+          <p className="text-muted" style={{ fontSize: 12.5 }}>Source : {current?.source}</p>
 
           {/* Bandeau récapitulatif des données détectées en haut du document (logo/entête) */}
           <div className="card" style={{ background: 'var(--ink-800)', boxShadow: 'none' }}>
@@ -232,124 +369,138 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
             <div className="grid-3" style={{ fontSize: 13.5 }}>
               <div>
                 <div className="text-muted" style={{ fontSize: 12 }}>{tiersType === 'client' ? 'Client' : 'Fournisseur'}</div>
-                <strong>{form.detecte?.nom || '— non détecté —'}</strong>
+                <strong>{current?.form.detecte?.nom || '— non détecté —'}</strong>
               </div>
               <div>
                 <div className="text-muted" style={{ fontSize: 12 }}>N° ICE</div>
-                <strong>{form.detecte?.ice || '— non détecté —'}</strong>
+                <strong>{current?.form.detecte?.ice || '— non détecté —'}</strong>
               </div>
               <div>
                 <div className="text-muted" style={{ fontSize: 12 }}>N° de facture</div>
-                <strong>{form.detecte?.numero_piece || '— non détecté —'}</strong>
+                <strong>{current?.form.detecte?.numero_piece || '— non détecté —'}</strong>
               </div>
               <div>
                 <div className="text-muted" style={{ fontSize: 12 }}>Montant HT</div>
-                <strong className="num">{form.detecte?.montant_ht != null ? `${form.detecte.montant_ht.toFixed(2)} DH` : '—'}</strong>
+                <strong className="num">{current?.form.detecte?.montant_ht != null ? `${current.form.detecte.montant_ht.toFixed(2)} DH` : '—'}</strong>
               </div>
               <div>
                 <div className="text-muted" style={{ fontSize: 12 }}>Montant TVA</div>
-                <strong className="num">{form.detecte?.montant_tva != null ? `${form.detecte.montant_tva.toFixed(2)} DH` : '—'}</strong>
+                <strong className="num">{current?.form.detecte?.montant_tva != null ? `${current.form.detecte.montant_tva.toFixed(2)} DH` : '—'}</strong>
               </div>
               <div>
                 <div className="text-muted" style={{ fontSize: 12 }}>Montant TTC</div>
-                <strong className="num">{form.detecte?.montant_ttc != null ? `${form.detecte.montant_ttc.toFixed(2)} DH` : '—'}</strong>
+                <strong className="num">{current?.form.detecte?.montant_ttc != null ? `${current.form.detecte.montant_ttc.toFixed(2)} DH` : '—'}</strong>
               </div>
             </div>
           </div>
 
-          {detected && (
+          {current?.detected && (
             <div className="alert alert-notice">
               {tiersType === 'client' ? 'Client' : 'Fournisseur'} détecté sur le document :{' '}
-              <strong>{detected.nom || '(nom non détecté)'}</strong>
-              {detected.ice && ` — ICE ${detected.ice}`}. Aucune fiche existante ne correspond.{' '}
+              <strong>{current.detected.nom || '(nom non détecté)'}</strong>
+              {current.detected.ice && ` — ICE ${current.detected.ice}`}. Aucune fiche existante ne correspond.{' '}
               <button type="button" className="btn btn-ghost" onClick={() => setShowCreateTiers(true)}>
                 Créer cette fiche maintenant
               </button>
             </div>
           )}
 
-          <form onSubmit={handleSave}>
-            <div className="grid-2">
-              <div className="field">
-                <label>{tiersType === 'client' ? 'Client' : 'Fournisseur'}</label>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <select value={form.tiers_id} onChange={(e) => setForm({ ...form, tiers_id: e.target.value })} style={{ flex: 1 }}>
-                    <option value="">Sélectionner…</option>
-                    {tiersList.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.account_numero} — {t.nom}
-                      </option>
-                    ))}
-                  </select>
-                  <button type="button" className="btn btn-ghost" onClick={() => setShowCreateTiers(true)}>
-                    + Nouveau
-                  </button>
-                </div>
-              </div>
-              <div className="field">
-                <label>Date de la facture (détectée à vérifier)</label>
-                <DateInputFR value={form.date_facture} onChange={(e) => setForm({ ...form, date_facture: e.target.value })} />
-              </div>
-            </div>
-            <div className="grid-3">
-              <div className="field">
-                <label>N° de facture * (détecté à vérifier)</label>
-                <input required value={form.numero_piece} onChange={(e) => setForm({ ...form, numero_piece: e.target.value })} />
-              </div>
-              <div className="field">
-                <label>Taux de TVA (%)</label>
-                <select value={form.taux_tva} onChange={(e) => setForm({ ...form, taux_tva: e.target.value })}>
-                  <option value="0">0% (exonéré)</option>
-                  {TAUX_TVA.map((t) => (
-                    <option key={t} value={t}>
-                      {t}%
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="field">
-                <label>Jours (délai de règlement)</label>
-                <input type="number" min="0" value={form.jours} onChange={(e) => setForm({ ...form, jours: e.target.value })} />
-              </div>
-            </div>
-            <div className="field">
-              <label>Libellé</label>
-              <input value={form.libelle} onChange={(e) => setForm({ ...form, libelle: e.target.value })} />
-            </div>
-            <div className="field">
-              <label>Montant HT détecté (DH) — à corriger si besoin</label>
-              <input required type="number" step="0.01" value={form.montant} onChange={(e) => setForm({ ...form, montant: e.target.value })} />
-            </div>
-
-            <p style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 13 }}>
-              HT : {montant.toFixed(2)} DH · TVA : {tva.toFixed(2)} DH · TTC : {ttc.toFixed(2)} DH
-            </p>
-
-            {form.mode_paiement && (
-              <div className="card" style={{ background: 'rgba(126,164,118,0.10)', boxShadow: 'none' }}>
-                <h2>Règlement détecté : {form.mode_paiement} {form.piece_reglement && `n°${form.piece_reglement}`}</h2>
+          {current && (
+            <form onSubmit={handleSaveCurrent}>
+              <div className="grid-2">
                 <div className="field">
-                  <label>Compte Trésor (pour enregistrer aussi le règlement — facultatif)</label>
-                  <select value={form.compte_tresor_numero} onChange={(e) => setForm({ ...form, compte_tresor_numero: e.target.value })}>
-                    <option value="">Ne pas saisir le règlement maintenant</option>
-                    {tresorerieAccounts.map((a) => (
-                      <option key={a.id} value={a.numero}>
-                        {a.numero} — {a.intitule}
+                  <label>{tiersType === 'client' ? 'Client' : 'Fournisseur'}</label>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <select value={current.form.tiers_id} onChange={(e) => updateCurrentForm({ tiers_id: e.target.value })} style={{ flex: 1 }}>
+                      <option value="">Sélectionner…</option>
+                      {tiersList.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.account_numero} — {t.nom}
+                        </option>
+                      ))}
+                    </select>
+                    <button type="button" className="btn btn-ghost" onClick={() => setShowCreateTiers(true)}>
+                      + Nouveau
+                    </button>
+                  </div>
+                </div>
+                <div className="field">
+                  <label>Date de la facture (détectée à vérifier)</label>
+                  <DateInputFR value={current.form.date_facture} onChange={(e) => updateCurrentForm({ date_facture: e.target.value })} />
+                </div>
+              </div>
+              <div className="grid-3">
+                <div className="field">
+                  <label>N° de facture * (détecté à vérifier)</label>
+                  <input required value={current.form.numero_piece} onChange={(e) => updateCurrentForm({ numero_piece: e.target.value })} />
+                </div>
+                <div className="field">
+                  <label>Taux de TVA (%)</label>
+                  <select value={current.form.taux_tva} onChange={(e) => updateCurrentForm({ taux_tva: e.target.value })}>
+                    <option value="0">0% (exonéré)</option>
+                    {TAUX_TVA.map((t) => (
+                      <option key={t} value={t}>
+                        {t}%
                       </option>
                     ))}
                   </select>
                 </div>
+                <div className="field">
+                  <label>Jours (délai de règlement)</label>
+                  <input type="number" min="0" value={current.form.jours} onChange={(e) => updateCurrentForm({ jours: e.target.value })} />
+                </div>
               </div>
-            )}
+              <div className="field">
+                <label>Libellé</label>
+                <input value={current.form.libelle} onChange={(e) => updateCurrentForm({ libelle: e.target.value })} />
+              </div>
+              <div className="field">
+                <label>Montant HT détecté (DH) — à corriger si besoin</label>
+                <input required type="number" step="0.01" value={current.form.montant} onChange={(e) => updateCurrentForm({ montant: e.target.value })} />
+              </div>
 
-            <button className="btn btn-primary mt-24" disabled={saving}>
-              {saving ? 'Enregistrement…' : 'Enregistrer la facture'}
-            </button>
-          </form>
+              {(() => {
+                const { montant, tva, ttc } = itemMontants(current);
+                return (
+                  <p style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 13 }}>
+                    HT : {montant.toFixed(2)} DH · TVA : {tva.toFixed(2)} DH · TTC : {ttc.toFixed(2)} DH
+                  </p>
+                );
+              })()}
+
+              {current.form.mode_paiement && (
+                <div className="card" style={{ background: 'rgba(126,164,118,0.10)', boxShadow: 'none' }}>
+                  <h2>Règlement détecté : {current.form.mode_paiement} {current.form.piece_reglement && `n°${current.form.piece_reglement}`}</h2>
+                  <div className="field">
+                    <label>Compte Trésor (pour enregistrer aussi le règlement — facultatif)</label>
+                    <select value={current.form.compte_tresor_numero} onChange={(e) => updateCurrentForm({ compte_tresor_numero: e.target.value })}>
+                      <option value="">Ne pas saisir le règlement maintenant</option>
+                      {tresorerieAccounts.map((a) => (
+                        <option key={a.id} value={a.numero}>
+                          {a.numero} — {a.intitule}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 10, marginTop: 24, flexWrap: 'wrap' }}>
+                <button className="btn btn-primary" disabled={saving || current.status === 'saved'}>
+                  {saving ? 'Enregistrement…' : current.status === 'saved' ? 'Déjà enregistrée' : 'Enregistrer cette facture'}
+                </button>
+                {queue.length > 1 && (
+                  <button type="button" className="btn btn-ghost" disabled={savingAll} onClick={handleSaveAll}>
+                    {savingAll ? 'Enregistrement en cours…' : `Enregistrer toutes les factures complètes (${queue.length - nbEnregistrees - nbIncompletes} restante(s))`}
+                  </button>
+                )}
+              </div>
+            </form>
+          )}
 
           <details style={{ marginTop: 16 }}>
             <summary style={{ cursor: 'pointer', color: 'var(--text-muted)' }}>Texte brut détecté par l'OCR</summary>
-            <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 8 }}>{rawText}</pre>
+            <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 8 }}>{current?.rawText}</pre>
           </details>
         </div>
       )}
@@ -359,15 +510,15 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
       <CreateAccountModal
         open={showCreateTiers}
         numeroInitial={nextTiersNumero(accounts, tiersType === 'client' ? '3421' : '4411')}
-        nomInitial={detected?.nom || ''}
-        iceInitial={detected?.ice || ''}
+        nomInitial={current?.detected?.nom || ''}
+        iceInitial={current?.detected?.ice || ''}
         companyId={activeCompany.id}
         onClose={() => setShowCreateTiers(false)}
         onCreated={(created) => {
           setShowCreateTiers(false);
-          setDetected(null);
           load();
-          if (created.tiers_id) setForm((f) => ({ ...f, tiers_id: String(created.tiers_id) }));
+          if (created.tiers_id) updateCurrentForm({ tiers_id: String(created.tiers_id) });
+          setQueue((q) => q.map((it, i) => (i === currentIndex ? { ...it, detected: null } : it)));
         }}
       />
     </div>
