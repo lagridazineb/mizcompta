@@ -1,16 +1,3 @@
-// Extraction de texte unifiée pour le module Scan (factures + relevé bancaire) :
-// - PDF "texte" (le cas le plus fréquent pour des factures générées par
-//   Word/Excel/un logiciel de facturation) : lecture directe via pdf.js, page
-//   par page, en conservant la structure en lignes/cellules (comme pour le
-//   Convertisseur PDF -> Excel).
-// - PDF "scanné" (page sans texte sélectionnable) et images (photo/scan) :
-//   reconnaissance OCR via tesseract.js, entièrement dans le navigateur.
-//
-// Renvoie toujours la même forme : { text, rows, pages }
-//  - text : texte brut complet (toutes pages), pour les recherches par mot-clé
-//  - rows : tableau de lignes, chaque ligne étant un tableau de cellules
-//           (colonnes déjà séparées quand le PDF contient du texte structuré)
-//  - pages : nombre de pages traitées
 
 import { createWorker } from 'tesseract.js';
 import { loadPdf, extractPdfPage } from './pdfExtract';
@@ -66,4 +53,42 @@ export async function extractDocument(file, { onStatus, onProgress } = {}) {
   const { data } = await worker.recognize(file);
   const rows = textToRows(data.text);
   return { text: data.text, rows, pages: 1 };
+}
+
+// Variante "par page" utilisée pour le Scan de factures : quand un même PDF
+// contient PLUSIEURS factures (une par page — cas très courant d'un lot de
+// factures scanné en une fois), on a besoin du texte de CHAQUE page
+// séparément pour en extraire autant de factures, au lieu de tout
+// concaténer en un seul document (ce qui ne permettait jamais de détecter
+// plus d'une facture, même sur un PDF de 40 pages).
+// Renvoie un tableau [{ text, rows }, ...], un élément par page (1 seul
+// élément pour une image).
+export async function extractDocumentPages(file, { onStatus, onProgress } = {}) {
+  const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+
+  if (isPdf) {
+    const pdf = await loadPdf(file);
+    const pages = [];
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      onStatus?.(`Lecture de la page ${pageNumber} / ${pdf.numPages}…`);
+      const { rows: pageRows, needsOcr, canvas } = await extractPdfPage(pdf, pageNumber);
+      let rows = pageRows;
+      if (needsOcr) {
+        onStatus?.(`Page ${pageNumber} / ${pdf.numPages} scannée — reconnaissance OCR en cours…`);
+        const worker = await getOcrWorker((p) => onProgress?.(Math.round(((pageNumber - 1 + p / 100) / pdf.numPages) * 100)));
+        const { data } = await worker.recognize(canvas);
+        rows = textToRows(data.text);
+      }
+      const text = rows.map((r) => r.join(' ')).join('\n');
+      pages.push({ text, rows });
+    }
+    return pages;
+  }
+
+  // Image (photo/scan) : une seule page
+  onStatus?.('Reconnaissance OCR en cours…');
+  const worker = await getOcrWorker(onProgress);
+  const { data } = await worker.recognize(file);
+  const rows = textToRows(data.text);
+  return [{ text: data.text, rows }];
 }
