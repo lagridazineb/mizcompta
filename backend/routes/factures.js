@@ -512,6 +512,38 @@ router.post('/companies/:companyId/import/factures', require('multer')({ storage
     return Number(str);
   }
   const MODE_LABELS = { CHQ: 'Chèque', ESP: 'Espèce', VRT: 'Virement', EFF: 'Effet', CB: 'Carte Bancaire' };
+  // Le fichier importé écrit parfois le mode en toutes lettres ("ESPECE",
+  // "ESPECES", "VIREMENT"...) plutôt qu'en code à 3 lettres (ESP, VRT...) —
+  // les deux graphies doivent être reconnues, sans quoi le paiement était
+  // ignoré silencieusement dès que la colonne ne contenait pas exactement
+  // un des 5 codes.
+  const MODE_LABELS_LONGS = {
+    ESPECE: 'Espèce', ESPECES: 'Espèce', 'ESPÈCE': 'Espèce', 'ESPÈCES': 'Espèce',
+    CHEQUE: 'Chèque', 'CHÈQUE': 'Chèque',
+    VIREMENT: 'Virement',
+    EFFET: 'Effet',
+    CARTE: 'Carte Bancaire', 'CARTE BANCAIRE': 'Carte Bancaire',
+  };
+  function resoudreMode(modeStr) {
+    if (!modeStr) return null;
+    return MODE_LABELS[modeStr] || MODE_LABELS_LONGS[modeStr] || modeStr;
+  }
+  // Compte de trésorerie par défaut pour le mode détecté : 5161 (Caisse)
+  // précisément pour un règlement en espèces, sinon le premier compte
+  // bancaire (514x) du plan comptable — même règle que la saisie manuelle
+  // (Factures.jsx / SaisiePaiementFournisseur.jsx). Sans cette résolution,
+  // le paiement importé n'avait jamais de compte de trésorerie associé et
+  // était donc TOUJOURS ignoré par createFactureRecord (voir plus bas :
+  // "paiement.compte_tresor_numero" est requis), quel que soit le mode.
+  const accountsCache = db.prepare('SELECT numero FROM accounts WHERE company_id = ?').all(companyId).map((a) => a.numero);
+  function compteTresorPourMode(modeLabel) {
+    if (!modeLabel) return null;
+    if (/esp[eè]ce/i.test(modeLabel)) {
+      return accountsCache.find((n) => n === '5161') || accountsCache.find((n) => n.startsWith('516')) || null;
+    }
+    return accountsCache.find((n) => n.startsWith('514')) || null;
+  }
+
   const tiersCache = new Map(); // nom (lowercase) -> tiers row, créé à la volée si absent
 
   function findOrCreateTiers(nom, ice) {
@@ -556,7 +588,8 @@ router.post('/companies/:companyId/import/factures', require('multer')({ storage
       const t = Number(String(tauxTvaStr).replace('%', '').replace(',', '.'));
       tauxTva = hadPercentSign || t > 1 ? round2(t) : round2(t * 100);
     }
-    const modePaiement = MODE_LABELS[modeStr] || (modeStr || null);
+    const modePaiement = resoudreMode(modeStr);
+    const compteTresorNumero = compteTresorPourMode(modePaiement);
 
     try {
       const tiersRow = findOrCreateTiers(clientNom, ice);
@@ -569,7 +602,14 @@ router.post('/companies/:companyId/import/factures', require('multer')({ storage
         appliquer_tva: tauxTva > 0, taux_tva: tauxTva,
       };
       if (modePaiement) {
-        payload.paiement = { date_paiement: dateStr, montant_paye: montant, mode: modePaiement };
+        if (!compteTresorNumero) {
+          results.erreurs.push({
+            ligne: idx + 2,
+            erreur: `Mode de paiement "${modeStr}" détecté mais aucun compte de trésorerie (${/esp[eè]ce/i.test(modePaiement) ? 'caisse 516x' : 'banque 514x'}) n'existe dans le plan comptable — la facture est créée mais SANS le règlement. Créez le compte puis saisissez le paiement manuellement.`,
+          });
+        } else {
+          payload.paiement = { date_paiement: dateStr, montant_paye: montant, mode: modePaiement, compte_tresor_numero: compteTresorNumero };
+        }
       }
       createFactureRecord(companyId, req.user.id, payload);
       results.factures_creees += 1;
