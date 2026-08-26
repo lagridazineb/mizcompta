@@ -32,21 +32,36 @@ const dbExists = fs.existsSync(DB_PATH);
 const TURSO_URL = process.env.TURSO_DATABASE_URL;
 const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN;
 
-const db = TURSO_URL
-  ? new Database(DB_PATH, {
+// IMPORTANT : la connexion à Turso ne doit jamais empêcher le site de
+// démarrer. Si les variables d'environnement sont absentes, mal formées, ou
+// si Turso est momentanément injoignable, on retombe sur un fichier SQLite
+// local classique (comme avant l'ajout de Turso) plutôt que de planter tout
+// le serveur. Le message d'erreur exact est affiché dans les logs Render
+// (onglet "Logs" du service) pour pouvoir corriger la variable en cause.
+let db;
+let tursoActive = false;
+if (TURSO_URL) {
+  try {
+    db = new Database(DB_PATH, {
       syncUrl: TURSO_URL,
       authToken: TURSO_TOKEN,
       // Synchronise vers Turso toutes les 30 secondes en tâche de fond, en
-      // plus de la synchronisation immédiate déjà garantie après chaque
-      // écriture (voir db.sync() explicite plus bas pour le démarrage).
+      // plus de la synchronisation immédiate garantie après chaque écriture.
       syncPeriod: 30,
-    })
-  : new Database(DB_PATH);
+    });
+    tursoActive = true;
+  } catch (err) {
+    console.error('Turso : connexion impossible au démarrage, bascule sur SQLite local uniquement (les données ne seront pas répliquées). Détail :', err.message);
+    db = new Database(DB_PATH);
+  }
+} else {
+  db = new Database(DB_PATH);
+}
 
 // Au démarrage, on tire d'abord la dernière version connue de Turso avant
 // toute lecture/écriture (utile si le disque local de Render vient d'être
 // recréé et est donc vide ou périmé).
-if (TURSO_URL) {
+if (tursoActive) {
   try {
     db.sync();
   } catch (err) {
