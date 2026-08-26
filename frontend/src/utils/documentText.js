@@ -1,6 +1,5 @@
-
 import { createWorker } from 'tesseract.js';
-import { loadPdf, extractPdfPage } from './pdfExtract';
+import { loadPdf, extractPdfPage, fileToCanvas, preprocessCanvasForOcr, upscaleCanvasIfSmall } from './pdfExtract';
 
 let sharedWorker = null;
 async function getOcrWorker(onProgress) {
@@ -40,17 +39,19 @@ export async function extractDocument(file, { onStatus, onProgress } = {}) {
       }
       onStatus?.(`Page ${pageNumber} scannée — reconnaissance OCR en cours…`);
       const worker = await getOcrWorker(onProgress);
-      const { data } = await worker.recognize(canvas);
+      const { data } = await worker.recognize(preprocessCanvasForOcr(canvas));
       rows = rows.concat(textToRows(data.text));
     }
     const text = rows.map((r) => r.join(' ')).join('\n');
     return { text, rows, pages: pdf.numPages };
   }
 
-  // Image (photo/scan) : reconnaissance OCR directe
+  // Image (photo/scan) : même prétraitement (binarisation Otsu) que pour une
+  // page PDF scannée avant de la passer à l'OCR — voir preprocessCanvasForOcr.
   onStatus?.('Reconnaissance OCR en cours…');
   const worker = await getOcrWorker(onProgress);
-  const { data } = await worker.recognize(file);
+  const imageCanvas = preprocessCanvasForOcr(upscaleCanvasIfSmall(await fileToCanvas(file)));
+  const { data } = await worker.recognize(imageCanvas);
   const rows = textToRows(data.text);
   return { text: data.text, rows, pages: 1 };
 }
@@ -76,7 +77,7 @@ export async function extractDocumentPages(file, { onStatus, onProgress } = {}) 
       if (needsOcr) {
         onStatus?.(`Page ${pageNumber} / ${pdf.numPages} scannée — reconnaissance OCR en cours…`);
         const worker = await getOcrWorker((p) => onProgress?.(Math.round(((pageNumber - 1 + p / 100) / pdf.numPages) * 100)));
-        const { data } = await worker.recognize(canvas);
+        const { data } = await worker.recognize(preprocessCanvasForOcr(canvas));
         rows = textToRows(data.text);
       }
       const text = rows.map((r) => r.join(' ')).join('\n');
@@ -85,10 +86,12 @@ export async function extractDocumentPages(file, { onStatus, onProgress } = {}) 
     return pages;
   }
 
-  // Image (photo/scan) : une seule page
+  // Image (photo/scan) : une seule page — même prétraitement (binarisation
+  // Otsu) que pour une page PDF scannée avant de la passer à l'OCR.
   onStatus?.('Reconnaissance OCR en cours…');
   const worker = await getOcrWorker(onProgress);
-  const { data } = await worker.recognize(file);
+  const imageCanvas = preprocessCanvasForOcr(upscaleCanvasIfSmall(await fileToCanvas(file)));
+  const { data } = await worker.recognize(imageCanvas);
   const rows = textToRows(data.text);
   return [{ text: data.text, rows }];
 }
