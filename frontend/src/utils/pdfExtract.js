@@ -1,10 +1,3 @@
-// Extraction du contenu d'un PDF, page par page, entièrement dans le
-// navigateur (pdf.js). Deux cas :
-//  - PDF "texte" (généré par un logiciel) : on lit directement les positions
-//    des mots pour reconstituer les lignes et les colonnes du tableau.
-//  - PDF "scanné" (photo/scan d'un document, sans texte sélectionnable) : on
-//    rend la page dans un canvas et on la renvoie pour être passée à l'OCR
-//    (tesseract.js), exactement comme pour une image classique.
 
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -158,6 +151,27 @@ export async function fileToCanvas(file) {
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+// Agrandit un canvas si sa résolution est trop faible pour l'OCR : les PDF
+// scannés sont rendus depuis un vecteur à scale=4 (voir renderPageToCanvas),
+// donc toujours nets, mais une PHOTO/image importée directement (appareil
+// photo, scan à basse résolution) peut arriver bien plus petite — et une
+// police fine ou cursive devient alors illisible pour Tesseract. On agrandit
+// donc jusqu'à atteindre une largeur cible raisonnable, sans jamais réduire
+// une image déjà grande.
+export function upscaleCanvasIfSmall(canvas, targetWidth = 2200, maxScale = 3) {
+  const { width, height } = canvas;
+  if (!width || !height || width >= targetWidth) return canvas;
+  const scale = Math.min(maxScale, targetWidth / width);
+  const scaled = document.createElement('canvas');
+  scaled.width = Math.round(width * scale);
+  scaled.height = Math.round(height * scale);
+  const ctx = scaled.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(canvas, 0, 0, scaled.width, scaled.height);
+  return scaled;
 }
 
 // Binarisation (noir/blanc) par seuillage d'Otsu : améliore nettement la
