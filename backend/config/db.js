@@ -40,19 +40,57 @@ const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN;
 // (onglet "Logs" du service) pour pouvoir corriger la variable en cause.
 let db;
 let tursoActive = false;
+
+// Cas particulier attendu lors de la MIGRATION vers Turso : le fichier
+// DB_PATH existe déjà sur le disque, créé par un déploiement précédent qui
+// n'utilisait pas encore Turso (fichier SQLite "classique", sans les
+// métadonnées de réplique que libsql attend). Dans ce cas précis, libsql
+// refuse de l'ouvrir avec l'erreur "db file exists but metadata file does
+// not". On le détecte et on met ce fichier de côté (jamais supprimé, juste
+// renommé en .pre-turso-backup) pour repartir sur une réplique neuve,
+// resynchronisée depuis Turso.
+function isMigrationMismatch(err) {
+  return /metadata file does not|invalid local state|wal_index|delete the database( file)? and (attempt|try) again/i.test(err.message || '');
+}
+function quarantineLocalFile() {
+  if (!fs.existsSync(DB_PATH)) return;
+  const backupPath = `${DB_PATH}.pre-turso-backup-${Date.now()}`;
+  fs.renameSync(DB_PATH, backupPath);
+  for (const suffix of ['-wal', '-shm']) {
+    if (fs.existsSync(DB_PATH + suffix)) fs.renameSync(DB_PATH + suffix, backupPath + suffix);
+  }
+  console.error(`Turso : ancien fichier SQLite local (pré-Turso) mis de côté sans le supprimer : ${backupPath}`);
+}
+
+function openTursoReplica() {
+  return new Database(DB_PATH, {
+    syncUrl: TURSO_URL,
+    authToken: TURSO_TOKEN,
+    // Synchronise vers Turso toutes les 30 secondes en tâche de fond, en
+    // plus de la synchronisation immédiate garantie après chaque écriture.
+    syncPeriod: 30,
+  });
+}
+
 if (TURSO_URL) {
   try {
-    db = new Database(DB_PATH, {
-      syncUrl: TURSO_URL,
-      authToken: TURSO_TOKEN,
-      // Synchronise vers Turso toutes les 30 secondes en tâche de fond, en
-      // plus de la synchronisation immédiate garantie après chaque écriture.
-      syncPeriod: 30,
-    });
+    db = openTursoReplica();
     tursoActive = true;
   } catch (err) {
-    console.error('Turso : connexion impossible au démarrage, bascule sur SQLite local uniquement (les données ne seront pas répliquées). Détail :', err.message);
-    db = new Database(DB_PATH);
+    if (isMigrationMismatch(err)) {
+      console.error('Turso : ancien fichier local incompatible détecté, nouvelle tentative après mise de côté du fichier. Détail :', err.message);
+      try {
+        quarantineLocalFile();
+        db = openTursoReplica();
+        tursoActive = true;
+      } catch (err2) {
+        console.error('Turso : toujours impossible après mise de côté du fichier, bascule sur SQLite local uniquement. Détail :', err2.message);
+        db = new Database(DB_PATH);
+      }
+    } else {
+      console.error('Turso : connexion impossible au démarrage, bascule sur SQLite local uniquement (les données ne seront pas répliquées). Détail :', err.message);
+      db = new Database(DB_PATH);
+    }
   }
 } else {
   db = new Database(DB_PATH);
