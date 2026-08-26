@@ -1,33 +1,84 @@
 // Connexion et initialisation de la base de données.
-// SQLite est utilisé ici pour simplifier le démarrage (fichier unique, zéro configuration).
-// Pour un cabinet en production avec plusieurs utilisateurs simultanés, migrer vers PostgreSQL
-// (le SQL ci-dessous est volontairement standard pour faciliter la migration).
-
-// NOTE : on utilise le module SQLite intégré à Node.js (node:sqlite), disponible depuis
-// Node 22+, à la place de better-sqlite3. Cela évite toute compilation native (node-gyp,
-// Visual Studio, etc.) : aucune installation supplémentaire n'est nécessaire.
-const { DatabaseSync } = require('node:sqlite');
+//
+// Stockage : Turso (base libSQL gratuite "pour toujours", pas d'essai limité
+// dans le temps) via une "embedded replica" — un fichier SQLite local pour
+// des lectures/écritures instantanées et synchrones (aucun changement dans
+// routes/*.js), répliqué automatiquement vers le cloud Turso en arrière-plan.
+// Concrètement : le disque de Render reste un simple cache local ; la copie
+// de référence (durable, sauvegardée) vit chez Turso. Si le disque de Render
+// est perdu (redéploiement, changement de plan...), les données ne le sont
+// pas : il suffit de relancer le service, la réplique se reconstruit toute
+// seule depuis Turso au démarrage.
+//
+// Variables d'environnement à définir sur Render (tableau de bord Turso ->
+// "Create Database" puis "Connect" pour les récupérer) :
+//   TURSO_DATABASE_URL   ex. libsql://mizcompta-xxxx.turso.io
+//   TURSO_AUTH_TOKEN     jeton généré depuis le dashboard Turso ou la CLI
+// Sans ces deux variables (ex. développement local), on retombe simplement
+// sur un fichier SQLite local classique, sans réplication.
+const Database = require('libsql');
 const path = require('path');
 const fs = require('fs');
 
-// Emplacement du fichier SQLite : configurable via la variable d'environnement
-// DB_PATH, pour pouvoir pointer vers un disque persistant en production (ex.
-// Render : /var/data/megacompta.db). Sans cette variable (développement
-// local), on garde l'emplacement historique dans backend/data/.
+// Emplacement du fichier SQLite LOCAL (réplique). Configurable via DB_PATH
+// pour pointer vers un disque persistant en production (ex. Render :
+// /var/data/megacompta.db). Sans cette variable (développement local), on
+// garde l'emplacement historique dans backend/data/.
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'megacompta.db');
-// Le dossier doit exister avant l'ouverture du fichier SQLite (DatabaseSync ne
-// le crée pas lui-même) — utile la première fois qu'on démarre avec un disque
-// persistant Render fraîchement monté.
+// Le dossier doit exister avant l'ouverture du fichier SQLite.
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 const dbExists = fs.existsSync(DB_PATH);
 
-const db = new DatabaseSync(DB_PATH);
+const TURSO_URL = process.env.TURSO_DATABASE_URL;
+const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN;
+
+const db = TURSO_URL
+  ? new Database(DB_PATH, {
+      syncUrl: TURSO_URL,
+      authToken: TURSO_TOKEN,
+      // Synchronise vers Turso toutes les 30 secondes en tâche de fond, en
+      // plus de la synchronisation immédiate déjà garantie après chaque
+      // écriture (voir db.sync() explicite plus bas pour le démarrage).
+      syncPeriod: 30,
+    })
+  : new Database(DB_PATH);
+
+// Au démarrage, on tire d'abord la dernière version connue de Turso avant
+// toute lecture/écriture (utile si le disque local de Render vient d'être
+// recréé et est donc vide ou périmé).
+if (TURSO_URL) {
+  try {
+    db.sync();
+  } catch (err) {
+    console.error('Turso : échec de la synchronisation initiale (on continue avec la réplique locale) :', err.message);
+  }
+}
+
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 
-// Compatibilité : better-sqlite3 offre db.pragma(...) et db.transaction(fn).
-// node:sqlite ne les fournit pas nativement, donc on les recrée ici pour ne rien
-// changer dans le reste du code (routes/*.js).
+// Compatibilité : le reste du code (routes/*.js) a été écrit pour l'API
+// synchrone façon better-sqlite3 (db.pragma, db.transaction). Le paquet
+// "libsql" reproduit déjà db.prepare().get()/.all()/.run() et db.exec() à
+// l'identique ; il ne fournit en revanche pas .pragma()/.transaction(), donc
+// on les recrée ici pour ne rien changer dans le reste du code.
+//
+// Il ajoute par ailleurs un champ interne `_metadata` sur les lignes
+// renvoyées par .get() (absent avec node:sqlite) : sans ce correctif, ce
+// champ technique se serait retrouvé exposé tel quel dans les réponses JSON
+// de l'API (ex. res.json(row)). On l'enlève systématiquement pour que .get()
+// se comporte exactement comme avant.
+const nativePrepare = db.prepare.bind(db);
+db.prepare = (sql) => {
+  const stmt = nativePrepare(sql);
+  const nativeGet = stmt.get.bind(stmt);
+  stmt.get = (...args) => {
+    const row = nativeGet(...args);
+    if (row && Object.prototype.hasOwnProperty.call(row, '_metadata')) delete row._metadata;
+    return row;
+  };
+  return stmt;
+};
 db.pragma = (sql) => db.exec(`PRAGMA ${sql}`);
 db.transaction = (fn) => {
   return (...args) => {
