@@ -92,7 +92,7 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
 
   // Construit une entrée de file d'attente (formulaire + libellé de source)
   // à partir des champs détectés sur UNE page/UN document.
-  function buildQueueItem(fields, rawText, source) {
+  function buildQueueItem(fields, rawText, source, file, page) {
     const iceCible = mode === 'vente' ? fields.ice_client : fields.ice_emetteur;
     const nomCible = mode === 'vente' ? fields.nom_client : fields.nom_emetteur;
     const match =
@@ -107,6 +107,11 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       source,
       rawText,
+      // Fichier d'origine (+ n° de page pour un PDF multi-factures) conservés
+      // pour pouvoir afficher le document original à côté du formulaire
+      // pendant la vérification (pointage), comme pour le relevé bancaire.
+      file,
+      page,
       detected: !match && (nomCible || iceCible) ? { nom: nomCible || '', ice: iceCible || '' } : null,
       status: 'pending', // pending | saved | error
       errorMsg: '',
@@ -159,7 +164,7 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
           const vide = fields.montant_ht == null && fields.montant_ttc == null && !fields.numero_piece && !fields.nom_emetteur;
           if (vide && pages.length > 1) return;
           const source = files.length > 1 || pages.length > 1 ? `${file.name}${pages.length > 1 ? ` — page ${pi + 1}/${pages.length}` : ''}` : file.name;
-          nouvelleFile.push(buildQueueItem(fields, page.text, source));
+          nouvelleFile.push(buildQueueItem(fields, page.text, source, file, pages.length > 1 ? pi + 1 : null));
         });
       }
       if (nouvelleFile.length === 0) {
@@ -279,8 +284,27 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
   const nbEnregistrees = queue.filter((it) => it.status === 'saved').length;
   const nbIncompletes = queue.filter((it) => it.status !== 'saved' && (!it.form.tiers_id || !it.form.numero_piece.trim())).length;
 
+  // Aperçu du document original à droite, pour pointer facilement les
+  // informations pendant la vérification du formulaire (même principe que
+  // pour le relevé bancaire).
+  const [fileUrl, setFileUrl] = useState(null);
+  useEffect(() => {
+    if (!current?.file) {
+      setFileUrl(null);
+      return undefined;
+    }
+    const url = URL.createObjectURL(current.file);
+    setFileUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [current?.file, current?.id]);
+  const fileEstPdf = current?.file && (current.file.type === 'application/pdf' || current.file.name.toLowerCase().endsWith('.pdf'));
+  // Pour un PDF regroupant plusieurs factures (une par page), on pointe
+  // directement le lecteur PDF sur la bonne page grâce au fragment #page=N.
+  const previewUrl = fileUrl && fileEstPdf && current?.page ? `${fileUrl}#page=${current.page}` : fileUrl;
+
   return (
-    <div>
+    <div className="scan-facture-split" style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+      <div style={{ flex: '1 1 auto', minWidth: 0 }}>
       <div className="card no-print">
         <h2>1. Scanner le(s) document(s)</h2>
         <p className="text-muted">
@@ -521,6 +545,37 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
           setQueue((q) => q.map((it, i) => (i === currentIndex ? { ...it, detected: null } : it)));
         }}
       />
+      </div>
+
+      {/* --- Aperçu du document original, à droite, pour pointer facilement
+          les champs détectés pendant la vérification (comme pour le relevé
+          bancaire) --- */}
+      {previewUrl && (
+        <div
+          className="no-print"
+          style={{ flex: '0 0 440px', flexShrink: 0, width: 440, maxWidth: '100%', position: 'sticky', top: 12, alignSelf: 'flex-start' }}
+        >
+          <div className="card" style={{ padding: 10 }}>
+            <h2 style={{ fontSize: 14, marginTop: 0 }}>
+              Document original{current?.page ? ` — page ${current.page}` : ''}
+            </h2>
+            {fileEstPdf ? (
+              <iframe
+                key={previewUrl}
+                src={previewUrl}
+                title="Facture originale"
+                style={{ width: '100%', height: '82vh', border: '1px solid var(--border)', borderRadius: 6 }}
+              />
+            ) : (
+              <img
+                src={previewUrl}
+                alt="Facture originale"
+                style={{ width: '100%', maxHeight: '82vh', objectFit: 'contain', borderRadius: 6, border: '1px solid var(--border)' }}
+              />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
