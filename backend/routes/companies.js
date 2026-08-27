@@ -75,60 +75,92 @@ router.post('/', (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  const tx = db.transaction((payload) => {
-    const info = insertCompany.run(
-      payload.raison_sociale,
-      payload.ice || null,
-      payload.if_fiscal || null,
-      payload.rc || null,
-      payload.patente || null,
-      payload.cnss || null,
-      payload.forme_juridique || null,
-      payload.activite || null,
-      payload.ville || null,
-      payload.telephone || null,
-      payload.email || null,
-      payload.mode_declaration || 'mensuel',
-      payload.adresse || null,
-      payload.regime_tva || 'encaissement',
-      payload.taux_tva_defaut || 20,
-      typePcFinal
-    );
-    const companyId = info.lastInsertRowid;
+  // La ligne "société" est créée à part, en autocommit (une seule requête,
+  // jamais retentée) : avec Turso/sqld, une écriture autocommit isolée a la
+  // garantie "read-your-writes" (on la revoit tout de suite, y compris pour
+  // les contraintes FK des lignes enfant qui vont suivre) — voir la note
+  // dans config/db.js. On ne veut surtout PAS ré-insérer cette ligne en cas
+  // de nouvel essai plus bas, sous peine de créer un doublon.
+  const info = insertCompany.run(
+    raison_sociale,
+    ice || null,
+    if_fiscal || null,
+    rc || null,
+    patente || null,
+    cnss || null,
+    forme_juridique || null,
+    activite || null,
+    ville || null,
+    telephone || null,
+    email || null,
+    mode_declaration || 'mensuel',
+    adresse || null,
+    regime_tva || 'encaissement',
+    taux_tva_defaut || 20,
+    typePcFinal
+  );
+  const companyId = info.lastInsertRowid;
 
-    // Plan comptable initial : le secteur immobilier (promotion, lotissement…)
-    // a des comptes de stocks et de charges/produits spécifiques (CNC, Plan
-    // Comptable du Secteur Immobilier, juin 2022) — les 3 autres types
-    // utilisent le PCGM standard, inchangé.
-    const planComptable = typePcFinal === 'SECT.IMMOBILIER' ? PCGM_IMMOBILIER : PCGM_STANDARD;
-    // INSERT OR IGNORE : si des comptes existent déjà pour cette société
-    // (données orphelines d'une tentative précédente avortée), on les saute
-    // silencieusement plutôt que de planter avec UNIQUE constraint failed.
-    const insertAccount = db.prepare(
-      'INSERT OR IGNORE INTO accounts (company_id, numero, intitule, classe, nature, lettrable) VALUES (?, ?, ?, ?, ?, ?)'
+  // Plan comptable initial : le secteur immobilier (promotion, lotissement…)
+  // a des comptes de stocks et de charges/produits spécifiques (CNC, Plan
+  // Comptable du Secteur Immobilier, juin 2022) — les 3 autres types
+  // utilisent le PCGM standard, inchangé.
+  const planComptable = typePcFinal === 'SECT.IMMOBILIER' ? PCGM_IMMOBILIER : PCGM_STANDARD;
+  const now = new Date();
+  const dateDebut = `${now.getFullYear()}-01-01`;
+  const dateFin = `${now.getFullYear()}-12-31`;
+
+  // Comptes, journaux et exercice : insérés par lots (voir db.insertMany)
+  // plutôt qu'une ligne à la fois — avec ~1124 comptes dans le PCGM
+  // standard, un insert par ligne représentait plus d'un millier
+  // d'allers-retours réseau vers Turso à chaque création de société (d'où
+  // les 2+ minutes constatées), et exposait longuement la transaction à
+  // l'aléa de session décrit dans config/db.js. Le tout reste dans
+  // db.runWithRetry(db.transaction(...)) par sécurité, mais ne devrait plus
+  // guère en avoir besoin : quelques requêtes au lieu de plus d'un millier.
+  try {
+    db.runWithRetry(
+      db.transaction(() => {
+        const accountRows = planComptable.map((acc) => [
+          companyId,
+          acc.numero,
+          acc.intitule,
+          acc.classe,
+          acc.nature,
+          acc.lettrable ? 1 : 0,
+        ]);
+        db.insertMany(
+          'INSERT OR IGNORE INTO accounts (company_id, numero, intitule, classe, nature, lettrable)',
+          accountRows
+        );
+
+        const journalRows = DEFAULT_JOURNALS.map((j) => [companyId, j.code, j.libelle]);
+        db.insertMany('INSERT OR IGNORE INTO journals (company_id, code, libelle)', journalRows);
+
+        db.prepare('INSERT OR IGNORE INTO fiscal_years (company_id, date_debut, date_fin) VALUES (?, ?, ?)').run(
+          companyId,
+          dateDebut,
+          dateFin
+        );
+      })
     );
-    for (const acc of planComptable) {
-      insertAccount.run(companyId, acc.numero, acc.intitule, acc.classe, acc.nature, acc.lettrable ? 1 : 0);
+  } catch (err) {
+    // Toutes les tentatives ont échoué : on retire la société orpheline
+    // (ON DELETE CASCADE nettoie le peu qui aurait pu être créé) plutôt que
+    // de laisser un dossier client à moitié initialisé, et on explique
+    // clairement qu'il s'agit d'un incident passager côté base distante.
+    try {
+      db.prepare('DELETE FROM companies WHERE id = ?').run(companyId);
+    } catch (cleanupErr) {
+      console.error('[companies] Échec du nettoyage après tentative infructueuse :', cleanupErr.message);
     }
+    err.status = 503;
+    err.message =
+      "La base de données distante a rencontré un incident passager pendant l'initialisation du dossier " +
+      '(plan comptable / journaux). Aucune société incomplète n\'a été conservée — merci de réessayer.';
+    throw err;
+  }
 
-    const insertJournal = db.prepare('INSERT OR IGNORE INTO journals (company_id, code, libelle) VALUES (?, ?, ?)');
-    for (const j of DEFAULT_JOURNALS) {
-      insertJournal.run(companyId, j.code, j.libelle);
-    }
-
-    const now = new Date();
-    const dateDebut = `${now.getFullYear()}-01-01`;
-    const dateFin = `${now.getFullYear()}-12-31`;
-    db.prepare('INSERT OR IGNORE INTO fiscal_years (company_id, date_debut, date_fin) VALUES (?, ?, ?)').run(
-      companyId,
-      dateDebut,
-      dateFin
-    );
-
-    return companyId;
-  });
-
-  const companyId = tx(req.body);
   const company = db.prepare('SELECT * FROM companies WHERE id = ?').get(companyId);
   res.status(201).json(company);
 });
