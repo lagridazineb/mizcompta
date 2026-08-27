@@ -41,31 +41,40 @@ const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN;
 let db;
 let tursoActive = false;
 
-// Cas particulier attendu lors de la MIGRATION vers Turso : le fichier
-// DB_PATH existe déjà sur le disque, créé par un déploiement précédent qui
-// n'utilisait pas encore Turso (fichier SQLite "classique", sans les
-// métadonnées de réplique que libsql attend). Dans ce cas précis, libsql
-// refuse de l'ouvrir avec l'erreur "db file exists but metadata file does
-// not". On le détecte et on met ce fichier de côté (jamais supprimé, juste
-// renommé en .pre-turso-backup) pour repartir sur une réplique neuve,
-// resynchronisée depuis Turso.
-function isMigrationMismatch(err) {
-  return /metadata file does not|invalid local state|wal_index|delete the database( file)? and (attempt|try) again/i.test(err.message || '');
-}
-function quarantineLocalFile() {
-  if (!fs.existsSync(DB_PATH)) return;
-  const backupPath = `${DB_PATH}.pre-turso-backup-${Date.now()}`;
-  fs.renameSync(DB_PATH, backupPath);
-  // Fichiers auxiliaires SQLite classiques
-  for (const suffix of ['-wal', '-shm']) {
-    if (fs.existsSync(DB_PATH + suffix)) fs.renameSync(DB_PATH + suffix, backupPath + suffix);
+// Vérification PROACTIVE de la cohérence des fichiers locaux de la réplique
+// Turso, AVANT toute tentative d'ouverture. Sur Render (disque éphémère),
+// entre deux redémarrages, il peut arriver que :
+//   • le .db existe sans le .meta  → libsql lève "db file exists but metadata file does not"
+//   • le .meta existe sans le .db  → libsql lève "metadata file exists but db file does not"
+//   • les deux existent mais sont corrompus → libsql lève "invalid local state"
+// Corriger de façon réactive (catch après l'erreur) ne suffit pas car libsql
+// génère quand même l'erreur interne (visible dans les logs). On assainit donc
+// l'état du disque AVANT d'ouvrir la base : si les fichiers ne forment pas une
+// paire cohérente (.db ET .meta tous les deux présents, ou tous les deux
+// absents), on les supprime — ils seront reconstruits depuis Turso.
+function sanitizeLocalReplicaFiles() {
+  const dbExists  = fs.existsSync(DB_PATH);
+  const metaExists = fs.existsSync(DB_PATH + '.meta');
+
+  // Cas sain : les deux sont présents (réplique existante) ou les deux sont
+  // absents (première exécution) — rien à faire.
+  if (dbExists === metaExists) return;
+
+  // Cas incohérent : un seul des deux fichiers est présent.
+  const ts = Date.now();
+  const reason = dbExists
+    ? '.db présent mais .meta absent (disque éphémère / pré-Turso)'
+    : '.meta présent mais .db absent (redémarrage partiel)';
+  console.warn(`Turso : état local incohérent détecté AVANT ouverture (${reason}). Nettoyage préventif…`);
+
+  // On renomme plutôt que supprimer pour ne jamais perdre de données.
+  for (const suffix of ['', '.meta', '-wal', '-shm']) {
+    const p = DB_PATH + suffix;
+    if (fs.existsSync(p)) {
+      fs.renameSync(p, `${DB_PATH}.pre-turso-backup-${ts}${suffix}`);
+    }
   }
-  // Fichier de métadonnées libsql (.meta) : sa présence sans le .db (ou
-  // inversement) est précisément ce qui provoque l'erreur "invalid local
-  // state" au redémarrage suivant. On le met de côté en même temps.
-  const metaPath = DB_PATH + '.meta';
-  if (fs.existsSync(metaPath)) fs.renameSync(metaPath, backupPath + '.meta');
-  console.error(`Turso : ancien fichier SQLite local (pré-Turso) mis de côté sans le supprimer : ${backupPath}`);
+  console.warn(`Turso : fichiers incohérents mis de côté (backup-${ts}). La réplique sera reconstruite depuis Turso.`);
 }
 
 function openTursoReplica() {
@@ -79,18 +88,33 @@ function openTursoReplica() {
 }
 
 if (TURSO_URL) {
+  // Assainissement préventif AVANT toute ouverture : supprime les fichiers
+  // locaux si leur état est incohérent (.db sans .meta ou .meta sans .db),
+  // pour éviter que libsql ne lève l'erreur "invalid local state".
+  sanitizeLocalReplicaFiles();
+
   try {
     db = openTursoReplica();
     tursoActive = true;
   } catch (err) {
-    if (isMigrationMismatch(err)) {
-      console.error('Turso : ancien fichier local incompatible détecté, nouvelle tentative après mise de côté du fichier. Détail :', err.message);
+    // Filet de sécurité : si malgré le nettoyage préventif libsql refuse
+    // encore d'ouvrir la réplique (corruption inattendue, erreur réseau…),
+    // on tente une dernière fois après un nettoyage complet, puis on bascule
+    // sur SQLite local pour ne pas bloquer le démarrage.
+    const isStateErr = /metadata file does not|invalid local state|wal_index|delete the database( file)? and (attempt|try) again/i.test(err.message || '');
+    if (isStateErr) {
+      console.error('Turso : état local toujours incohérent après nettoyage préventif, nouvelle tentative. Détail :', err.message);
       try {
-        quarantineLocalFile();
+        // Nettoyage radical : on retire tous les fichiers locaux liés à la réplique.
+        const ts2 = Date.now();
+        for (const suffix of ['', '.meta', '-wal', '-shm']) {
+          const p = DB_PATH + suffix;
+          if (fs.existsSync(p)) fs.renameSync(p, `${DB_PATH}.emergency-backup-${ts2}${suffix}`);
+        }
         db = openTursoReplica();
         tursoActive = true;
       } catch (err2) {
-        console.error('Turso : toujours impossible après mise de côté du fichier, bascule sur SQLite local uniquement. Détail :', err2.message);
+        console.error('Turso : toujours impossible après nettoyage complet, bascule sur SQLite local uniquement. Détail :', err2.message);
         db = new Database(DB_PATH);
       }
     } else {
