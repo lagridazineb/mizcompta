@@ -130,6 +130,26 @@ db.prepare = (sql) => {
     if (row && Object.prototype.hasOwnProperty.call(row, '_metadata')) delete row._metadata;
     return row;
   };
+
+  // Diagnostic : les erreurs Hrana/libsql (ex. "FOREIGN KEY constraint
+  // failed") n'indiquent ni la requête ni les valeurs en cause. On les
+  // rattrape ici pour logger le SQL exact + les paramètres avant de
+  // relancer l'erreur d'origine (le comportement de l'appelant ne change
+  // pas), afin de pouvoir identifier immédiatement quelle ligne/quel id est
+  // en cause dans les logs Render.
+  const nativeRun = stmt.run.bind(stmt);
+  stmt.run = (...args) => {
+    try {
+      return nativeRun(...args);
+    } catch (err) {
+      console.error(
+        `[SQL] Échec de "${sql}" avec les paramètres ${JSON.stringify(args)} :`,
+        err.message
+      );
+      throw err;
+    }
+  };
+
   return stmt;
 };
 db.pragma = (sql) => db.exec(`PRAGMA ${sql}`);
