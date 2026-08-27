@@ -10,16 +10,11 @@ router.use(requireAuth);
 const PCGM_STANDARD = JSON.parse(
   fs.readFileSync(path.join(__dirname, '..', 'data', 'pcgm_standard.json'), 'utf-8')
 );
-// Plan comptable spécifique au secteur immobilier (promotion immobilière,
-// lotissement…), extrait du "Plan Comptable du Secteur Immobilier" (CNC,
-// juin 2022) — comptes de stocks (terrains, programmes en cours…) et de
-// charges/produits propres au métier, absents du PCGM standard.
+
 const PCGM_IMMOBILIER = JSON.parse(
   fs.readFileSync(path.join(__dirname, '..', 'data', 'pcgm_immobilier.json'), 'utf-8')
 );
-// Types de plan comptable proposés à la création d'une société — seul
-// SECT.IMMOBILIER change le plan de comptes initial pour l'instant ; les
-// autres types utilisent le PCGM standard (comme avant).
+
 const TYPES_PC = ['ENTREPRISE', 'SECT.IMMOBILIER', 'ASSOCIATION', 'PERSONNE PHYSIQUE'];
 
 const DEFAULT_JOURNALS = [
@@ -31,9 +26,6 @@ const DEFAULT_JOURNALS = [
   { code: 'JB', libelle: 'Journal CNSS / AMO' },
 ];
 
-// Liste des sociétés (avec recherche optionnelle : ?q=texte)
-// La recherche porte sur la raison sociale, l'ICE, l'IF, le RC, la patente,
-// la ville et l'activité.
 router.get('/', (req, res) => {
   const q = (req.query.q || '').trim();
   if (!q) {
