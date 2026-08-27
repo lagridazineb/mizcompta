@@ -80,31 +80,28 @@ router.post('/', (req, res) => {
       raison_sociale, ice, if_fiscal, rc, patente, cnss, forme_juridique,
       activite, ville, telephone, email, mode_declaration, adresse, regime_tva, taux_tva_defaut, type_pc
     )
-    VALUES (
-      @raison_sociale, @ice, @if_fiscal, @rc, @patente, @cnss, @forme_juridique,
-      @activite, @ville, @telephone, @email, @mode_declaration, @adresse, @regime_tva, @taux_tva_defaut, @type_pc
-    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const tx = db.transaction((payload) => {
-    const info = insertCompany.run({
-      raison_sociale: payload.raison_sociale,
-      ice: payload.ice || null,
-      if_fiscal: payload.if_fiscal || null,
-      rc: payload.rc || null,
-      patente: payload.patente || null,
-      cnss: payload.cnss || null,
-      forme_juridique: payload.forme_juridique || null,
-      activite: payload.activite || null,
-      ville: payload.ville || null,
-      telephone: payload.telephone || null,
-      email: payload.email || null,
-      mode_declaration: payload.mode_declaration || 'mensuel',
-      adresse: payload.adresse || null,
-      regime_tva: payload.regime_tva || 'encaissement',
-      taux_tva_defaut: payload.taux_tva_defaut || 20,
-      type_pc: typePcFinal,
-    });
+    const info = insertCompany.run(
+      payload.raison_sociale,
+      payload.ice || null,
+      payload.if_fiscal || null,
+      payload.rc || null,
+      payload.patente || null,
+      payload.cnss || null,
+      payload.forme_juridique || null,
+      payload.activite || null,
+      payload.ville || null,
+      payload.telephone || null,
+      payload.email || null,
+      payload.mode_declaration || 'mensuel',
+      payload.adresse || null,
+      payload.regime_tva || 'encaissement',
+      payload.taux_tva_defaut || 20,
+      typePcFinal
+    );
     const companyId = info.lastInsertRowid;
 
     // Plan comptable initial : le secteur immobilier (promotion, lotissement…)
@@ -174,40 +171,40 @@ router.put('/:id', (req, res) => {
 
   db.prepare(
     `UPDATE companies SET
-      raison_sociale = @raison_sociale,
-      ice = @ice,
-      if_fiscal = @if_fiscal,
-      rc = @rc,
-      patente = @patente,
-      cnss = @cnss,
-      forme_juridique = @forme_juridique,
-      activite = @activite,
-      ville = @ville,
-      telephone = @telephone,
-      email = @email,
-      mode_declaration = @mode_declaration,
-      adresse = @adresse,
-      regime_tva = @regime_tva,
-      taux_tva_defaut = @taux_tva_defaut
-    WHERE id = @id`
-  ).run({
-    id: req.params.id,
+      raison_sociale = ?,
+      ice = ?,
+      if_fiscal = ?,
+      rc = ?,
+      patente = ?,
+      cnss = ?,
+      forme_juridique = ?,
+      activite = ?,
+      ville = ?,
+      telephone = ?,
+      email = ?,
+      mode_declaration = ?,
+      adresse = ?,
+      regime_tva = ?,
+      taux_tva_defaut = ?
+    WHERE id = ?`
+  ).run(
     raison_sociale,
-    ice: ice || null,
-    if_fiscal: if_fiscal || null,
-    rc: rc || null,
-    patente: patente || null,
-    cnss: cnss || null,
-    forme_juridique: forme_juridique || null,
-    activite: activite || null,
-    ville: ville || null,
-    telephone: telephone || null,
-    email: email || null,
-    mode_declaration: mode_declaration || 'mensuel',
-    adresse: adresse || null,
-    regime_tva: regime_tva || 'encaissement',
-    taux_tva_defaut: taux_tva_defaut || 20,
-  });
+    ice || null,
+    if_fiscal || null,
+    rc || null,
+    patente || null,
+    cnss || null,
+    forme_juridique || null,
+    activite || null,
+    ville || null,
+    telephone || null,
+    email || null,
+    mode_declaration || 'mensuel',
+    adresse || null,
+    regime_tva || 'encaissement',
+    taux_tva_defaut || 20,
+    req.params.id
+  );
 
   const company = db.prepare('SELECT * FROM companies WHERE id = ?').get(req.params.id);
   res.json(company);
