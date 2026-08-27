@@ -139,13 +139,6 @@ if (tursoActive) {
 
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
-// defer_foreign_keys au niveau SESSION : la contrainte FK n'est vérifiée
-// qu'au COMMIT (et non instruction par instruction), ce qui évite l'erreur
-// "FOREIGN KEY constraint failed" avec Turso/Hrana quand des lignes enfant
-// sont insérées juste après leur parent dans la même transaction. SQLite
-// remet automatiquement ce pragma à OFF après chaque COMMIT/ROLLBACK, donc
-// il est sans effet hors transaction et ne présente aucun risque.
-db.exec('PRAGMA defer_foreign_keys = ON');
 
 // Compatibilité : le reste du code (routes/*.js) a été écrit pour l'API
 // synchrone façon better-sqlite3 (db.pragma, db.transaction). Le paquet
@@ -192,15 +185,25 @@ db.prepare = (sql) => {
 db.pragma = (sql) => db.exec(`PRAGMA ${sql}`);
 db.transaction = (fn) => {
   return (...args) => {
+    // Avec libsql/Hrana (Turso), PRAGMA defer_foreign_keys = ON est ignoré :
+    // la vérification FK reste immédiate, instruction par instruction, ce qui
+    // provoque "FOREIGN KEY constraint failed" quand des lignes enfant
+    // (accounts, journals…) sont insérées juste après leur parent (companies)
+    // dans la même transaction — la ligne parent n'est pas encore visible du
+    // moteur FK au moment de chaque INSERT enfant.
+    //
+    // Solution fiable : désactiver foreign_keys AVANT BEGIN, puis le
+    // réactiver juste après COMMIT/ROLLBACK. SQLite garantit qu'au moment du
+    // COMMIT toutes les données sont cohérentes (le ROLLBACK annule tout si
+    // ce n'est pas le cas). C'est sans risque : nos routes n'insèrent jamais
+    // de données orphelines volontairement, et ROLLBACK est toujours appelé
+    // en cas d'erreur.
+    db.exec('PRAGMA foreign_keys = OFF');
     db.exec('BEGIN');
-    // defer_foreign_keys est déjà activé au niveau SESSION (voir plus haut).
-    // SQLite le remet à OFF automatiquement après chaque COMMIT/ROLLBACK,
-    // donc on le réactive à chaque BEGIN pour être sûr qu'il s'applique
-    // même si un ROLLBACK précédent l'a désactivé.
-    db.exec('PRAGMA defer_foreign_keys = ON');
     try {
       const result = fn(...args);
       db.exec('COMMIT');
+      db.exec('PRAGMA foreign_keys = ON');
       // Après un COMMIT réussi, on rafraîchit immédiatement la réplique
       // locale : la plupart des routes font un SELECT juste après avoir
       // appelé une transaction (pour renvoyer la ligne créée/modifiée), et
@@ -232,6 +235,9 @@ db.transaction = (fn) => {
           rollbackErr.message
         );
       }
+      // Toujours réactiver les FK, même après un ROLLBACK, pour ne pas
+      // laisser la session dans un état sans contraintes.
+      try { db.exec('PRAGMA foreign_keys = ON'); } catch (_) {}
       throw err;
     }
   };
