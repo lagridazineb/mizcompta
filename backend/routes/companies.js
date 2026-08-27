@@ -109,14 +109,17 @@ router.post('/', (req, res) => {
     // Comptable du Secteur Immobilier, juin 2022) — les 3 autres types
     // utilisent le PCGM standard, inchangé.
     const planComptable = typePcFinal === 'SECT.IMMOBILIER' ? PCGM_IMMOBILIER : PCGM_STANDARD;
+    // INSERT OR IGNORE : si des comptes existent déjà pour cette société
+    // (données orphelines d'une tentative précédente avortée), on les saute
+    // silencieusement plutôt que de planter avec UNIQUE constraint failed.
     const insertAccount = db.prepare(
-      'INSERT INTO accounts (company_id, numero, intitule, classe, nature, lettrable) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT OR IGNORE INTO accounts (company_id, numero, intitule, classe, nature, lettrable) VALUES (?, ?, ?, ?, ?, ?)'
     );
     for (const acc of planComptable) {
       insertAccount.run(companyId, acc.numero, acc.intitule, acc.classe, acc.nature, acc.lettrable ? 1 : 0);
     }
 
-    const insertJournal = db.prepare('INSERT INTO journals (company_id, code, libelle) VALUES (?, ?, ?)');
+    const insertJournal = db.prepare('INSERT OR IGNORE INTO journals (company_id, code, libelle) VALUES (?, ?, ?)');
     for (const j of DEFAULT_JOURNALS) {
       insertJournal.run(companyId, j.code, j.libelle);
     }
@@ -124,7 +127,7 @@ router.post('/', (req, res) => {
     const now = new Date();
     const dateDebut = `${now.getFullYear()}-01-01`;
     const dateFin = `${now.getFullYear()}-12-31`;
-    db.prepare('INSERT INTO fiscal_years (company_id, date_debut, date_fin) VALUES (?, ?, ?)').run(
+    db.prepare('INSERT OR IGNORE INTO fiscal_years (company_id, date_debut, date_fin) VALUES (?, ?, ?)').run(
       companyId,
       dateDebut,
       dateFin
