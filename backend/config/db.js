@@ -183,27 +183,30 @@ db.prepare = (sql) => {
   return stmt;
 };
 db.pragma = (sql) => db.exec(`PRAGMA ${sql}`);
+
+// NOTE IMPORTANTE (voir aussi db.runWithRetry ci-dessous) : on a essayé
+// PRAGMA defer_foreign_keys = ON, puis PRAGMA foreign_keys = OFF autour de la
+// transaction — aucun des deux ne règle "FOREIGN KEY constraint failed" de
+// façon fiable. Ce n'est pas un bug de logique applicative : c'est une
+// limite documentée du serveur sqld (celui qui fait tourner Turso). Une
+// session Hrana n'est pas garantie de s'exécuter sur UNE SEULE connexion
+// stable côté serveur — en particulier avec la "réplication en écriture"
+// (embedded replica -> primaire distant) — donc un PRAGMA envoyé par le
+// client peut très bien ne pas s'appliquer à la connexion qui exécute la
+// requête suivante. Voir https://github.com/libsql/sqld/issues/764. C'est
+// cohérent avec ce qu'on observe : l'échec ne porte pas toujours sur la
+// même ligne (compte "01" une fois, "0134" une autre) — signature d'une
+// course/incohérence de session ponctuelle, pas d'une erreur systématique.
+// => on n'essaie plus de désactiver/différer les FK ; on garde les
+// contraintes actives en permanence (sécurité des données) et on absorbe
+// l'aléa par une re-tentative ciblée (db.runWithRetry) au niveau des routes
+// qui insèrent des lignes enfant juste après leur ligne parent.
 db.transaction = (fn) => {
   return (...args) => {
-    // Avec libsql/Hrana (Turso), PRAGMA defer_foreign_keys = ON est ignoré :
-    // la vérification FK reste immédiate, instruction par instruction, ce qui
-    // provoque "FOREIGN KEY constraint failed" quand des lignes enfant
-    // (accounts, journals…) sont insérées juste après leur parent (companies)
-    // dans la même transaction — la ligne parent n'est pas encore visible du
-    // moteur FK au moment de chaque INSERT enfant.
-    //
-    // Solution fiable : désactiver foreign_keys AVANT BEGIN, puis le
-    // réactiver juste après COMMIT/ROLLBACK. SQLite garantit qu'au moment du
-    // COMMIT toutes les données sont cohérentes (le ROLLBACK annule tout si
-    // ce n'est pas le cas). C'est sans risque : nos routes n'insèrent jamais
-    // de données orphelines volontairement, et ROLLBACK est toujours appelé
-    // en cas d'erreur.
-    db.exec('PRAGMA foreign_keys = OFF');
     db.exec('BEGIN');
     try {
       const result = fn(...args);
       db.exec('COMMIT');
-      db.exec('PRAGMA foreign_keys = ON');
       // Après un COMMIT réussi, on rafraîchit immédiatement la réplique
       // locale : la plupart des routes font un SELECT juste après avoir
       // appelé une transaction (pour renvoyer la ligne créée/modifiée), et
@@ -235,12 +238,83 @@ db.transaction = (fn) => {
           rollbackErr.message
         );
       }
-      // Toujours réactiver les FK, même après un ROLLBACK, pour ne pas
-      // laisser la session dans un état sans contraintes.
-      try { db.exec('PRAGMA foreign_keys = ON'); } catch (_) {}
       throw err;
     }
   };
+};
+
+// Pause synchrone (bloquante) de `ms` millisecondes. Le reste du code de
+// l'appli est entièrement synchrone (API façon better-sqlite3), donc un
+// simple `await sleep(ms)` n'est pas utilisable ici sans réécrire toutes les
+// routes en async. Atomics.wait sur un buffer partagé est la façon standard
+// d'obtenir une attente bloquante synchrone en Node.js.
+function sleepSync(ms) {
+  const sab = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(sab, 0, 0, ms);
+}
+
+// Insère beaucoup de lignes en peu d'aller-retours réseau, au lieu d'un
+// .run() par ligne. Avec Turso (chaque .run() = un aller-retour réseau vers
+// la base distante), une boucle de plus d'un millier d'inserts un par un
+// (ex. les ~1124 comptes du PCGM standard à chaque création de société) est
+// à la fois LENTE (plusieurs minutes) et plus exposée à l'aléa de session
+// décrit plus haut (plus il y a d'allers-retours dans une même transaction,
+// plus la probabilité qu'un seul d'entre eux tombe sur une connexion en
+// retard augmente). Ici, on regroupe les lignes par lots de `batchSize` et
+// on envoie chaque lot comme une seule requête "INSERT ... VALUES (?,?,?),
+// (?,?,?),..." — toujours avec des paramètres liés (?), donc aucun risque
+// d'injection SQL même si une valeur contient une apostrophe (ex. "Primes
+// d'émission").
+// `rows` : tableau de tableaux, chaque sous-tableau = les valeurs d'une
+// ligne, dans l'ordre des colonnes.
+db.insertMany = (insertSqlPrefix, rows, { batchSize = 200 } = {}) => {
+  if (rows.length === 0) return;
+  const columnsPerRow = rows[0].length;
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const batch = rows.slice(i, i + batchSize);
+    const placeholders = batch.map(() => `(${Array(columnsPerRow).fill('?').join(',')})`).join(',');
+    const args = batch.flat();
+    db.prepare(`${insertSqlPrefix} VALUES ${placeholders}`).run(...args);
+  }
+};
+
+// Ré-exécute `fn` si elle échoue avec "FOREIGN KEY constraint failed" — voir
+// la note au-dessus de db.transaction : ce type d'échec, avec Turso/sqld,
+// peut être un aléa ponctuel de session/réplication plutôt qu'une vraie
+// erreur de données. Entre deux tentatives, on resynchronise la réplique
+// locale et on attend un court instant (délai croissant) pour laisser le
+// temps à l'incohérence de se résorber.
+//
+// IMPORTANT : `fn` doit être ré-exécutable sans effet de bord cumulatif en
+// cas de nouvel essai (ex. utiliser INSERT OR IGNORE plutôt que INSERT, ne
+// jamais y insérer la ligne "parent" elle-même une deuxième fois). Les
+// erreurs qui ne sont pas des "FOREIGN KEY constraint failed" ne sont
+// jamais retentées : elles remontent immédiatement.
+db.runWithRetry = (fn, { attempts = 4, baseDelayMs = 250 } = {}) => {
+  let lastErr;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return fn();
+    } catch (err) {
+      lastErr = err;
+      const isForeignKeyRace = /FOREIGN KEY constraint failed/i.test(err.message || '');
+      if (!isForeignKeyRace || attempt === attempts) throw err;
+      console.error(
+        `[runWithRetry] "FOREIGN KEY constraint failed" (essai ${attempt}/${attempts}), ` +
+          `probable incohérence de session Turso/sqld passagère — resynchronisation puis nouvel essai :`,
+        err.message
+      );
+      if (tursoActive) {
+        try {
+          db.sync();
+        } catch (syncErr) {
+          console.error('[runWithRetry] sync avant nouvel essai échouée (ignorée) :', syncErr.message);
+        }
+      }
+      sleepSync(baseDelayMs * attempt);
+    }
+  }
+  throw lastErr;
 };
 
 function init() {
