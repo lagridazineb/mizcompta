@@ -141,7 +141,22 @@ db.transaction = (fn) => {
       db.exec('COMMIT');
       return result;
     } catch (err) {
-      db.exec('ROLLBACK');
+      // Avec Turso/Hrana, quand une instruction échoue en cours de
+      // transaction, le serveur distant annule déjà la transaction de son
+      // côté. Le ROLLBACK qu'on tente ensuite échoue alors avec sa propre
+      // erreur ("cannot rollback - no transaction is active" / Hrana Api
+      // error) — une erreur sans intérêt qui, si on la laissait remonter,
+      // remplacerait et cacherait la VRAIE cause (err) de l'échec initial.
+      // On l'avale simplement (juste tracée pour le diagnostic) et on
+      // relance systématiquement l'erreur d'origine.
+      try {
+        db.exec('ROLLBACK');
+      } catch (rollbackErr) {
+        console.error(
+          '[transaction] ROLLBACK impossible (transaction déjà annulée côté serveur) — erreur ignorée, on relance la cause réelle :',
+          rollbackErr.message
+        );
+      }
       throw err;
     }
   };
