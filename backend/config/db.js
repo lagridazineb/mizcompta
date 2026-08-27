@@ -56,9 +56,15 @@ function quarantineLocalFile() {
   if (!fs.existsSync(DB_PATH)) return;
   const backupPath = `${DB_PATH}.pre-turso-backup-${Date.now()}`;
   fs.renameSync(DB_PATH, backupPath);
+  // Fichiers auxiliaires SQLite classiques
   for (const suffix of ['-wal', '-shm']) {
     if (fs.existsSync(DB_PATH + suffix)) fs.renameSync(DB_PATH + suffix, backupPath + suffix);
   }
+  // Fichier de métadonnées libsql (.meta) : sa présence sans le .db (ou
+  // inversement) est précisément ce qui provoque l'erreur "invalid local
+  // state" au redémarrage suivant. On le met de côté en même temps.
+  const metaPath = DB_PATH + '.meta';
+  if (fs.existsSync(metaPath)) fs.renameSync(metaPath, backupPath + '.meta');
   console.error(`Turso : ancien fichier SQLite local (pré-Turso) mis de côté sans le supprimer : ${backupPath}`);
 }
 
@@ -109,6 +115,13 @@ if (tursoActive) {
 
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
+// defer_foreign_keys au niveau SESSION : la contrainte FK n'est vérifiée
+// qu'au COMMIT (et non instruction par instruction), ce qui évite l'erreur
+// "FOREIGN KEY constraint failed" avec Turso/Hrana quand des lignes enfant
+// sont insérées juste après leur parent dans la même transaction. SQLite
+// remet automatiquement ce pragma à OFF après chaque COMMIT/ROLLBACK, donc
+// il est sans effet hors transaction et ne présente aucun risque.
+db.exec('PRAGMA defer_foreign_keys = ON');
 
 // Compatibilité : le reste du code (routes/*.js) a été écrit pour l'API
 // synchrone façon better-sqlite3 (db.pragma, db.transaction). Le paquet
@@ -156,22 +169,10 @@ db.pragma = (sql) => db.exec(`PRAGMA ${sql}`);
 db.transaction = (fn) => {
   return (...args) => {
     db.exec('BEGIN');
-    // Beaucoup de routes insèrent une ligne "parent" (société, écriture,
-    // facture...) puis, dans la MÊME transaction, des lignes "enfant" qui la
-    // référencent par clé étrangère (comptes/journaux liés à company_id,
-    // lignes liées à entry_id...). Avec Turso/Hrana, la vérification d'une
-    // contrainte FOREIGN KEY immédiate (comportement par défaut de SQLite)
-    // peut être évaluée statement par statement pendant que la transaction
-    // est encore ouverte, avant que toutes les écritures de la transaction
-    // ne soient garanties visibles ensemble — ce qui déclenche à tort
-    // "FOREIGN KEY constraint failed" sur la toute première ligne enfant,
-    // alors que la ligne parent vient pourtant d'être insérée juste avant.
-    // PRAGMA defer_foreign_keys reporte la vérification des contraintes FK
-    // à l'instant du COMMIT (une seule vérification globale, une fois que
-    // TOUTES les écritures de la transaction sont faites) plutôt qu'à
-    // chaque instruction — comportement standard SQLite, sans risque : il
-    // se désactive de lui-même à la fin de la transaction (COMMIT ou
-    // ROLLBACK), qu'elle réussisse ou échoue.
+    // defer_foreign_keys est déjà activé au niveau SESSION (voir plus haut).
+    // SQLite le remet à OFF automatiquement après chaque COMMIT/ROLLBACK,
+    // donc on le réactive à chaque BEGIN pour être sûr qu'il s'applique
+    // même si un ROLLBACK précédent l'a désactivé.
     db.exec('PRAGMA defer_foreign_keys = ON');
     try {
       const result = fn(...args);
