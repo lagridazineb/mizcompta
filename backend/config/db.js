@@ -156,9 +156,39 @@ db.pragma = (sql) => db.exec(`PRAGMA ${sql}`);
 db.transaction = (fn) => {
   return (...args) => {
     db.exec('BEGIN');
+    // Beaucoup de routes insèrent une ligne "parent" (société, écriture,
+    // facture...) puis, dans la MÊME transaction, des lignes "enfant" qui la
+    // référencent par clé étrangère (comptes/journaux liés à company_id,
+    // lignes liées à entry_id...). Avec Turso/Hrana, la vérification d'une
+    // contrainte FOREIGN KEY immédiate (comportement par défaut de SQLite)
+    // peut être évaluée statement par statement pendant que la transaction
+    // est encore ouverte, avant que toutes les écritures de la transaction
+    // ne soient garanties visibles ensemble — ce qui déclenche à tort
+    // "FOREIGN KEY constraint failed" sur la toute première ligne enfant,
+    // alors que la ligne parent vient pourtant d'être insérée juste avant.
+    // PRAGMA defer_foreign_keys reporte la vérification des contraintes FK
+    // à l'instant du COMMIT (une seule vérification globale, une fois que
+    // TOUTES les écritures de la transaction sont faites) plutôt qu'à
+    // chaque instruction — comportement standard SQLite, sans risque : il
+    // se désactive de lui-même à la fin de la transaction (COMMIT ou
+    // ROLLBACK), qu'elle réussisse ou échoue.
+    db.exec('PRAGMA defer_foreign_keys = ON');
     try {
       const result = fn(...args);
       db.exec('COMMIT');
+      // Après un COMMIT réussi, on rafraîchit immédiatement la réplique
+      // locale : la plupart des routes font un SELECT juste après avoir
+      // appelé une transaction (pour renvoyer la ligne créée/modifiée), et
+      // ce SELECT doit voir ce qui vient d'être écrit. On avale toute
+      // erreur de sync ici : elle ne doit jamais faire échouer une
+      // opération qui a déjà réussi côté base de données.
+      if (tursoActive) {
+        try {
+          db.sync();
+        } catch (syncErr) {
+          console.error('[transaction] sync post-COMMIT échouée (ignorée) :', syncErr.message);
+        }
+      }
       return result;
     } catch (err) {
       // Avec Turso/Hrana, quand une instruction échoue en cours de
