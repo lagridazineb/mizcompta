@@ -6,13 +6,13 @@ import PrintHeader from '../components/PrintHeader';
 import DownloadMenu from '../components/DownloadMenu';
 import DateInputFR from '../components/DateInputFR';
 
-// Types de comptes proposés au filtre : "Tous", puis les racines du plan
-// comptable pour isoler rapidement les comptes Clients (34) ou Fournisseurs
-// (44), comme demandé ("filtrer par ... client fournisseur").
-const FILTRES_TYPE = [
-  { value: 'tous', label: 'Tous les comptes' },
-  { value: '34', label: 'Clients (34)' },
-  { value: '44', label: 'Fournisseurs (44)' },
+// Les 4 vues de la balance, comme dans le logiciel de référence (voir
+// capture : radios Générale / Condensée / Clients / Fournisseurs).
+const MODES = [
+  { value: 'generale', label: 'Générale', hint: 'Tous les comptes, en détail' },
+  { value: 'condensee', label: 'Condensée', hint: 'Comptes clients/fournisseurs regroupés sous 3421 et 4411' },
+  { value: 'clients', label: 'Clients', hint: 'Comptes de la classe 34 uniquement' },
+  { value: 'fournisseurs', label: 'Fournisseurs', hint: 'Comptes de la classe 44 uniquement' },
 ];
 
 export default function Balance() {
@@ -23,12 +23,8 @@ export default function Balance() {
   // entière), mais reste modifiable pour filtrer sur une période précise.
   const [dateDebut, setDateDebut] = useState('');
   const [dateFin, setDateFin] = useState('');
-  const [typeCompte, setTypeCompte] = useState('tous');
+  const [mode, setMode] = useState('generale');
   const [recherche, setRecherche] = useState('');
-  // "Balance condensée" : les sous-comptes de tiers (clients 3421xx,
-  // fournisseurs 4411xx) sont regroupés sous leur compte racine au lieu
-  // d'apparaître un par un — voir le paramètre `condense` du endpoint.
-  const [condensee, setCondensee] = useState(false);
 
   useEffect(() => {
     if (activeFiscalYear) {
@@ -41,10 +37,16 @@ export default function Balance() {
     if (!activeCompany || !dateDebut || !dateFin) return;
     setLoading(true);
     api
-      .getBalance(activeCompany.id, { date_debut: dateDebut, date_fin: dateFin, ...(condensee ? { condense: '1' } : {}) })
+      .getBalance(activeCompany.id, {
+        date_debut: dateDebut,
+        date_fin: dateFin,
+        ...(mode === 'condensee' ? { condense: '1' } : {}),
+      })
       .then(setRows)
       .finally(() => setLoading(false));
-  }, [activeCompany, dateDebut, dateFin, condensee]);
+  }, [activeCompany, dateDebut, dateFin, mode]);
+
+  const typeCompte = mode === 'clients' ? '34' : mode === 'fournisseurs' ? '44' : 'tous';
 
   const rowsFiltrees = useMemo(() => {
     const rechercheLow = recherche.trim().toLowerCase();
@@ -92,31 +94,26 @@ export default function Balance() {
             </button>
           </div>
         </div>
-        <div className="grid-3">
-          <div className="field">
-            <label>Type de compte</label>
-            <select value={typeCompte} onChange={(e) => setTypeCompte(e.target.value)}>
-              {FILTRES_TYPE.map((f) => (
-                <option key={f.value} value={f.value}>
-                  {f.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label>Recherche (N° compte / client / fournisseur)</label>
-            <input value={recherche} onChange={(e) => setRecherche(e.target.value)} placeholder="Ex : 3421, nom du client…" />
+        <div className="field" style={{ marginTop: 10 }}>
+          <label>Balance</label>
+          <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+            {MODES.map((m) => (
+              <label key={m.value} title={m.hint} style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: mode === m.value ? 700 : 400 }}>
+                <input type="radio" style={{ width: 'auto' }} name="balance-mode" value={m.value} checked={mode === m.value} onChange={() => setMode(m.value)} />
+                {m.label}
+              </label>
+            ))}
           </div>
         </div>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
-          <input type="checkbox" style={{ width: 'auto' }} checked={condensee} onChange={(e) => setCondensee(e.target.checked)} />
-          Balance condensée (regroupe les comptes clients/fournisseurs sous 3421 et 4411)
-        </label>
+        <div className="field">
+          <label>Recherche (N° compte / client / fournisseur)</label>
+          <input value={recherche} onChange={(e) => setRecherche(e.target.value)} placeholder="Ex : 3421, nom du client…" />
+        </div>
       </div>
 
       <div className="card">
         <div className="flex-between no-print">
-          <h2 style={{ margin: 0 }}>{condensee ? 'Balance condensée' : 'Balance générale'}</h2>
+          <h2 style={{ margin: 0 }}>Balance {MODES.find((m) => m.value === mode)?.label.toLowerCase()}</h2>
           <div style={{ display: 'flex', gap: 8 }}>
             <DownloadMenu onDownload={(format) => api.downloadBalance(activeCompany.id, activeFiscalYear?.id, format)} />
             <button type="button" className="btn btn-ghost" onClick={() => window.print()}>🖶 Imprimer</button>
@@ -124,7 +121,7 @@ export default function Balance() {
         </div>
         <PrintHeader
           company={activeCompany}
-          title={condensee ? 'BALANCE CONDENSÉE' : 'BALANCE GÉNÉRALE'}
+          title={`BALANCE ${MODES.find((m) => m.value === mode)?.label.toUpperCase()}`}
           periodeDebut={dateDebut || activeFiscalYear?.date_debut}
           periodeFin={dateFin || activeFiscalYear?.date_fin}
         />
