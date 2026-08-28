@@ -38,8 +38,8 @@ function getOrCreateCompteAttente(companyId, sens) {
 }
 
 function journalForCompteTresor(numero) {
-  if (numero.startsWith('516')) return 'CA';
-  return 'BQ';
+  if (numero.startsWith('516')) return 'JC';
+  return 'JB';
 }
 
 function getJournal(companyId, code) {
