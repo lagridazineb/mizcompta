@@ -19,8 +19,8 @@ function getAccountByNumero(companyId, numero) {
   return db.prepare('SELECT * FROM accounts WHERE company_id = ? AND numero = ?').get(companyId, numero);
 }
 function journalForCompteTresor(numero) {
-  if (numero.startsWith('516')) return 'CA';
-  return 'BQ';
+  if (numero.startsWith('516')) return 'JC';
+  return 'JB';
 }
 function isModeCheque(mode) {
   return /ch[eè]que/i.test(String(mode || ''));
