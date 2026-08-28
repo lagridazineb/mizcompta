@@ -156,9 +156,14 @@ router.get('/companies/:companyId/reports/journal-centralisateur', (req, res) =>
   res.json({ journaux: centralisateur, total_debit: totalGeneralDebit, total_credit: totalGeneralCredit });
 });
 
-// Balance générale : cumul débit/crédit et solde par compte, sur une période
+// Balance générale : cumul débit/crédit et solde par compte, sur une période.
+// Avec ?condense=1 : "Balance condensée" — les sous-comptes auxiliaires de
+// tiers (clients 3421xx, fournisseurs 4411xx — voir RACINE dans
+// tiersService.js) sont regroupés sous leur compte racine (3421 "Clients",
+// 4411 "Fournisseur") au lieu d'apparaître un par un, comme dans le
+// logiciel de référence.
 router.get('/companies/:companyId/reports/balance', (req, res) => {
-  const { fiscal_year_id, date_debut, date_fin } = req.query;
+  const { fiscal_year_id, date_debut, date_fin, condense } = req.query;
   const companyId = req.params.companyId;
 
   let dateFilter = '';
@@ -193,7 +198,7 @@ router.get('/companies/:companyId/reports/balance', (req, res) => {
     .all(...(dateFilter ? [companyId, ...params.slice(1)] : [companyId]));
 
   // Recalcul propre (la requête ci-dessus jointe peut inclure des comptes sans mouvement)
-  const balance = rows.map((r) => {
+  let balance = rows.map((r) => {
     const solde = r.total_debit - r.total_credit;
     return {
       ...r,
@@ -201,6 +206,60 @@ router.get('/companies/:companyId/reports/balance', (req, res) => {
       solde_crediteur: solde < 0 ? -solde : 0,
     };
   });
+
+  if (condense === '1' || condense === 'true') {
+    // Racines de regroupement des tiers (mêmes valeurs que RACINE dans
+    // services/tiersService.js — dupliquées ici plutôt qu'importées pour ne
+    // pas coupler ce endpoint de lecture au module d'écriture des tiers).
+    const RACINES_TIERS = { '3421': 'Clients', '4411': 'Fournisseur' };
+    const tiersAccountIds = new Set(
+      db.prepare('SELECT account_id FROM tiers WHERE company_id = ?').all(companyId).map((t) => t.account_id)
+    );
+
+    // 1) Sépare les vraies lignes de sous-comptes tiers (ex: 342104, 441101)
+    // du reste. On ne condense QUE les comptes présents dans la table
+    // `tiers`, jamais un compte générique du PCGM qui partagerait le même
+    // préfixe par coïncidence (ex: 34551 TVA récupérable ne doit pas être
+    // aspiré sous 3421 "Clients").
+    const sousComptesTiers = [];
+    const autresLignes = [];
+    for (const r of balance) {
+      const racineNumero = Object.keys(RACINES_TIERS).find((rac) => r.numero.startsWith(rac) && r.numero !== rac);
+      if (racineNumero && tiersAccountIds.has(r.account_id)) {
+        sousComptesTiers.push({ ...r, racineNumero });
+      } else {
+        autresLignes.push(r);
+      }
+    }
+
+    // 2) Cumule chaque groupe de sous-comptes sous sa racine, en partant des
+    // mouvements déjà portés par la racine elle-même si elle en a (retirée
+    // de `autresLignes` pour ne pas la dupliquer).
+    const racinesTouchees = new Set(sousComptesTiers.map((r) => r.racineNumero));
+    const lignesFinales = autresLignes.filter((r) => !racinesTouchees.has(r.numero));
+    for (const racineNumero of racinesTouchees) {
+      const ligneRacineExistante = autresLignes.find((r) => r.numero === racineNumero);
+      const totalDebit =
+        (ligneRacineExistante?.total_debit || 0) +
+        sousComptesTiers.filter((r) => r.racineNumero === racineNumero).reduce((s, r) => s + r.total_debit, 0);
+      const totalCredit =
+        (ligneRacineExistante?.total_credit || 0) +
+        sousComptesTiers.filter((r) => r.racineNumero === racineNumero).reduce((s, r) => s + r.total_credit, 0);
+      const solde = totalDebit - totalCredit;
+      lignesFinales.push({
+        account_id: ligneRacineExistante?.account_id ?? `racine-${racineNumero}`,
+        numero: racineNumero,
+        intitule: RACINES_TIERS[racineNumero],
+        classe: ligneRacineExistante?.classe ?? Number(racineNumero[0]),
+        total_debit: totalDebit,
+        total_credit: totalCredit,
+        solde_debiteur: solde > 0 ? solde : 0,
+        solde_crediteur: solde < 0 ? -solde : 0,
+      });
+    }
+    balance = lignesFinales.sort((a, b) => (a.numero < b.numero ? -1 : a.numero > b.numero ? 1 : 0));
+  }
+
 
   res.json(balance);
 });
