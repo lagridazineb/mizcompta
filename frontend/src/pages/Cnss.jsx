@@ -219,7 +219,7 @@ export default function Cnss() {
         <h1>CNSS / AMO</h1>
         <p>Bordereau de cotisations : saisie manuelle (calcul automatique aux taux publiés) ou scan du document.</p>
         <p className="text-muted" style={{ fontSize: 12.5 }}>
-          Journal : <strong>JB — CNSS / AMO</strong> (toujours séparé du relevé bancaire dans les écritures comptables).
+          Journal : <strong>CN — CNSS / AMO</strong> (toujours séparé du relevé bancaire dans les écritures comptables).
         </p>
       </div>
 
