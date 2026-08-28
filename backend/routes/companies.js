@@ -18,12 +18,14 @@ const PCGM_IMMOBILIER = JSON.parse(
 const TYPES_PC = ['ENTREPRISE', 'SECT.IMMOBILIER', 'ASSOCIATION', 'PERSONNE PHYSIQUE'];
 
 const DEFAULT_JOURNALS = [
-  { code: 'AC', libelle: 'Journal des achats' },
-  { code: 'VE', libelle: 'Journal des ventes' },
-  { code: 'BQ', libelle: 'Journal de banque' },
-  { code: 'CA', libelle: 'Journal de caisse' },
+  { code: 'AN', libelle: 'Journal des à-nouveaux' },
+  { code: 'JA', libelle: 'Journal des achats' },
+  { code: 'JB', libelle: 'Journal de banque' },
+  { code: 'JC', libelle: 'Journal de caisse' },
+  { code: 'JP', libelle: 'Journal de paie' },
+  { code: 'JV', libelle: 'Journal des ventes' },
   { code: 'OD', libelle: "Journal des opérations diverses" },
-  { code: 'JB', libelle: 'Journal CNSS / AMO' },
+  { code: 'CN', libelle: 'Journal CNSS / AMO' },
 ];
 
 router.get('/', (req, res) => {
