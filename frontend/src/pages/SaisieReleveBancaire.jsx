@@ -23,7 +23,7 @@ function round2(n) {
 }
 function journalInfo(numero) {
   if (!numero) return { code: '', libelle: '' };
-  return numero.startsWith('516') ? { code: 'CA', libelle: 'Journal de caisse' } : { code: 'BQ', libelle: 'Journal de banque' };
+  return numero.startsWith('516') ? { code: 'JC', libelle: 'Journal de caisse' } : { code: 'JB', libelle: 'Journal de banque' };
 }
 
 const emptyLigne = () => ({
