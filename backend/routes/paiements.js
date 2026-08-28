@@ -131,7 +131,7 @@ function reglementsCnssPourPeriode(companyId, fiscalYearId, periode) {
                         WHERE jl.entry_id = je.id AND a.numero = '4441'), 0) AS montant
        FROM journal_entries je
        JOIN journals jr ON jr.id = je.journal_id
-       WHERE je.company_id = ? AND je.fiscal_year_id = ? AND jr.code = 'JB'
+       WHERE je.company_id = ? AND je.fiscal_year_id = ? AND jr.code = 'CN'
          AND je.type_piece = 'reglement' AND je.libelle LIKE ?
        ORDER BY je.date_ecriture`
     )
@@ -188,11 +188,11 @@ router.post('/companies/:companyId/paiements/cnss', (req, res) => {
     compteCnss = { id: info.lastInsertRowid, numero: '4441' };
   }
 
-  const codeJournal = 'JB';
+  const codeJournal = 'CN';
   let journal = db.prepare('SELECT id FROM journals WHERE company_id = ? AND code = ?').get(companyId, codeJournal);
   if (!journal) {
     // Sociétés créées avant l'ajout du journal CNSS/AMO dédié : on le crée à
-    // la volée plutôt que de réutiliser BQ/CA, pour que les paiements CNSS
+    // la volée plutôt que de réutiliser JB/JC, pour que les paiements CNSS
     // restent toujours à part du relevé bancaire dans les écritures.
     const info = db.prepare('INSERT INTO journals (company_id, code, libelle) VALUES (?, ?, ?)').run(companyId, codeJournal, 'Journal CNSS / AMO');
     journal = { id: info.lastInsertRowid };
