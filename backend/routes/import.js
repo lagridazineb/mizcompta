@@ -67,9 +67,9 @@ router.get('/companies/:companyId/import/modele/tiers', (req, res) => {
 
 router.get('/companies/:companyId/import/modele/ecritures', (req, res) => {
   const rows = [
-    { Journal: 'VE', Date: '2026-01-15', Piece: 'F001', Libelle: 'Vente marchandises', Compte: '7111', Debit: '', Credit: '1000', Tiers: '' },
-    { Journal: 'VE', Date: '2026-01-15', Piece: 'F001', Libelle: 'Vente marchandises', Compte: '342101', Debit: '1200', Credit: '', Tiers: 'Client Exemple' },
-    { Journal: 'VE', Date: '2026-01-15', Piece: 'F001', Libelle: 'Vente marchandises', Compte: '4455', Debit: '', Credit: '200', Tiers: '' },
+    { Journal: 'JV', Date: '2026-01-15', Piece: 'F001', Libelle: 'Vente marchandises', Compte: '7111', Debit: '', Credit: '1000', Tiers: '' },
+    { Journal: 'JV', Date: '2026-01-15', Piece: 'F001', Libelle: 'Vente marchandises', Compte: '342101', Debit: '1200', Credit: '', Tiers: 'Client Exemple' },
+    { Journal: 'JV', Date: '2026-01-15', Piece: 'F001', Libelle: 'Vente marchandises', Compte: '4455', Debit: '', Credit: '200', Tiers: '' },
   ];
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
