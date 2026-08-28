@@ -10,7 +10,7 @@ router.use(requireAuth);
 // Comptes / journaux par défaut du Plan Comptable Marocain (PCGM)
 const CONFIG = {
   vente: {
-    journalCode: 'VE',
+    journalCode: 'JV',
     contrepartieDefaut: '7111', // Ventes de marchandises au Maroc
     tvaRacineCharge: '4455', // Etat, TVA facturée
     tvaRacineImmo: '4455',
@@ -19,7 +19,7 @@ const CONFIG = {
     tvaNature: 'passif',
   },
   achat: {
-    journalCode: 'AC',
+    journalCode: 'JA',
     contrepartieDefaut: '6111', // Achats de marchandises groupe A
     tvaRacineCharge: '34552', // Etat, TVA récupérable sur charges
     tvaRacineImmo: '34551', // Etat, TVA récupérable sur immobilisations
@@ -59,8 +59,8 @@ function getOrCreateTvaAccount(companyId, racine, taux, nature, libelleBase) {
 }
 
 function journalForCompteTresor(numero) {
-  if (numero.startsWith('516')) return 'CA'; // Caisses, régies d'avances et accréditifs
-  return 'BQ'; // Banques, Trésorerie Générale, chèques postaux
+  if (numero.startsWith('516')) return 'JC'; // Caisses, régies d'avances et accréditifs
+  return 'JB'; // Banques, Trésorerie Générale, chèques postaux
 }
 
 function isModeCheque(mode) {
@@ -96,7 +96,7 @@ function lignesAvecComptes(entryId) {
     .all(entryId);
 }
 
-// Liste des factures (écritures des journaux VE/AC), avec le tiers et le paiement lié
+// Liste des factures (écritures des journaux JV/JA), avec le tiers et le paiement lié
 router.get('/companies/:companyId/factures', (req, res) => {
   const { type } = req.query;
   const companyId = req.params.companyId;
