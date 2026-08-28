@@ -182,7 +182,7 @@ router.patch('/companies/:companyId/journal-lines/reimputer-compte', (req, res) 
 });
 
 // Réimpute le journal de plusieurs écritures (je.id) vers un autre journal
-// (recherché par code, ex : "JB", "AC"…).
+// (recherché par code, ex : "JB", "JA"…).
 router.patch('/companies/:companyId/entries/reimputer-journal', (req, res) => {
   const companyId = req.params.companyId;
   const { entry_ids, journal_code } = req.body;
