@@ -25,6 +25,10 @@ export default function Balance() {
   const [dateFin, setDateFin] = useState('');
   const [typeCompte, setTypeCompte] = useState('tous');
   const [recherche, setRecherche] = useState('');
+  // "Balance condensée" : les sous-comptes de tiers (clients 3421xx,
+  // fournisseurs 4411xx) sont regroupés sous leur compte racine au lieu
+  // d'apparaître un par un — voir le paramètre `condense` du endpoint.
+  const [condensee, setCondensee] = useState(false);
 
   useEffect(() => {
     if (activeFiscalYear) {
@@ -37,10 +41,10 @@ export default function Balance() {
     if (!activeCompany || !dateDebut || !dateFin) return;
     setLoading(true);
     api
-      .getBalance(activeCompany.id, { date_debut: dateDebut, date_fin: dateFin })
+      .getBalance(activeCompany.id, { date_debut: dateDebut, date_fin: dateFin, ...(condensee ? { condense: '1' } : {}) })
       .then(setRows)
       .finally(() => setLoading(false));
-  }, [activeCompany, dateDebut, dateFin]);
+  }, [activeCompany, dateDebut, dateFin, condensee]);
 
   const rowsFiltrees = useMemo(() => {
     const rechercheLow = recherche.trim().toLowerCase();
@@ -104,11 +108,15 @@ export default function Balance() {
             <input value={recherche} onChange={(e) => setRecherche(e.target.value)} placeholder="Ex : 3421, nom du client…" />
           </div>
         </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+          <input type="checkbox" style={{ width: 'auto' }} checked={condensee} onChange={(e) => setCondensee(e.target.checked)} />
+          Balance condensée (regroupe les comptes clients/fournisseurs sous 3421 et 4411)
+        </label>
       </div>
 
       <div className="card">
         <div className="flex-between no-print">
-          <h2 style={{ margin: 0 }}>Balance générale</h2>
+          <h2 style={{ margin: 0 }}>{condensee ? 'Balance condensée' : 'Balance générale'}</h2>
           <div style={{ display: 'flex', gap: 8 }}>
             <DownloadMenu onDownload={(format) => api.downloadBalance(activeCompany.id, activeFiscalYear?.id, format)} />
             <button type="button" className="btn btn-ghost" onClick={() => window.print()}>🖶 Imprimer</button>
@@ -116,7 +124,7 @@ export default function Balance() {
         </div>
         <PrintHeader
           company={activeCompany}
-          title="BALANCE GÉNÉRALE"
+          title={condensee ? 'BALANCE CONDENSÉE' : 'BALANCE GÉNÉRALE'}
           periodeDebut={dateDebut || activeFiscalYear?.date_debut}
           periodeFin={dateFin || activeFiscalYear?.date_fin}
         />
@@ -143,9 +151,14 @@ export default function Balance() {
                 <td className="num debit">{r.solde_debiteur ? r.solde_debiteur.toFixed(2) : ''}</td>
                 <td className="num credit">{r.solde_crediteur ? r.solde_crediteur.toFixed(2) : ''}</td>
                 <td className="no-print">
-                  <Link className="btn btn-ghost" to={`/grand-livre?account=${r.account_id}`}>
-                    Grand livre
-                  </Link>
+                  {/* En mode condensé, une ligne racine (ex: 4411) peut être synthétisée
+                      (id "racine-4411") si aucun mouvement direct n'existait sur ce compte —
+                      pas de vrai compte à ouvrir dans le Grand livre dans ce cas précis. */}
+                  {typeof r.account_id === 'number' && (
+                    <Link className="btn btn-ghost" to={`/grand-livre?account=${r.account_id}`}>
+                      Grand livre
+                    </Link>
+                  )}
                 </td>
               </tr>
             ))}
