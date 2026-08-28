@@ -507,6 +507,7 @@ function init() {
   `);
 
   migrateCompaniesTable();
+  migrateJournalCodes();
 }
 
 // Ajoute les colonnes manquantes sur la table companies pour les bases de données
@@ -606,5 +607,79 @@ function migrateCompaniesTable() {
 }
 
 init();
+
+// Filet de sécurité : supprime au démarrage les lignes "enfant" devenues
+// orphelines (accounts/journals/fiscal_years dont la company_id ne
+// correspond plus à aucune société) — normalement empêché par ON DELETE
+// CASCADE, mais un incident de réplication Turso passé (avant les
+// correctifs de db.runWithRetry / db.insertMany) en a laissé quelques-unes
+// derrière lui. Sans effet si la base est déjà propre.
+function cleanupOrphanedRows() {
+  const tables = ['accounts', 'journals', 'fiscal_years'];
+  for (const table of tables) {
+    const info = db.prepare(`DELETE FROM ${table} WHERE company_id NOT IN (SELECT id FROM companies)`).run();
+    if (info.changes > 0) {
+      console.log(`[cleanup] ${info.changes} ligne(s) orpheline(s) supprimée(s) dans ${table}.`);
+    }
+  }
+}
+cleanupOrphanedRows();
+
+// Aligne les journaux des sociétés déjà créées sur les codes du logiciel de
+// référence (voir capture "Journaux" : AN, JA, JB, JC, JP, JV, OD) — les
+// codes utilisés jusqu'ici (AC/VE/BQ/CA) ne correspondaient pas, et il
+// manquait purement et simplement les journaux AN (à-nouveaux) et JP (paie).
+// On RENOMME les journaux existants en place (même id, donc les écritures
+// déjà passées dessus gardent leur historique intact) plutôt que d'en
+// recréer de nouveaux, pour ne rien dupliquer. Chaque UPDATE est sans effet
+// la fois suivante (plus aucune ligne à l'ancien code), donc cette migration
+// est sûre à rejouer à chaque démarrage.
+function migrateJournalCodes() {
+  // Seul le code 'JB' est ambigu dans le temps : avant ce correctif il
+  // désignait le journal CNSS/AMO dédié (voir routes/paiements.js) ;
+  // désormais il désigne le journal de banque, comme dans le logiciel de
+  // référence. On ne renomme QUE les lignes 'JB' dont le libellé est encore
+  // l'ancien (CNSS) — jamais un 'JB' déjà correct (société créée après ce
+  // correctif), sinon on le ferait entrer en collision avec son propre
+  // journal 'CN' (contrainte UNIQUE(company_id, code)). C'est exactement
+  // l'échec observé lors du test de cette migration : un renommage global
+  // sans cette condition percutait les sociétés déjà à jour.
+  db.exec("UPDATE journals SET code = 'CN' WHERE code = 'JB' AND libelle LIKE '%CNSS%'");
+
+  // Ces quatre codes n'ont jamais eu qu'un seul sens : renommage sans
+  // ambiguïté, pas besoin de condition supplémentaire. Et comme 'JB' vient
+  // d'être libéré ci-dessus pour toute société qui en avait besoin, ce
+  // renommage 'BQ' -> 'JB' ne peut plus entrer en collision.
+  db.exec("UPDATE journals SET code = 'JB', libelle = 'Journal de banque' WHERE code = 'BQ'");
+  db.exec("UPDATE journals SET code = 'JC', libelle = 'Journal de caisse' WHERE code = 'CA'");
+  db.exec("UPDATE journals SET code = 'JA', libelle = 'Journal des achats' WHERE code = 'AC'");
+  db.exec("UPDATE journals SET code = 'JV', libelle = 'Journal des ventes' WHERE code = 'VE'");
+
+  // Comble les journaux encore manquants (AN, JP en premier lieu, mais aussi
+  // toute société dont un des 8 journaux standard n'existerait pas du tout)
+  // pour chaque société déjà créée — INSERT OR IGNORE : ne touche jamais une
+  // société qui a déjà le journal.
+  const STANDARD_JOURNALS = [
+    { code: 'AN', libelle: 'Journal des à-nouveaux' },
+    { code: 'JA', libelle: 'Journal des achats' },
+    { code: 'JB', libelle: 'Journal de banque' },
+    { code: 'JC', libelle: 'Journal de caisse' },
+    { code: 'JP', libelle: 'Journal de paie' },
+    { code: 'JV', libelle: 'Journal des ventes' },
+    { code: 'OD', libelle: "Journal des opérations diverses" },
+    { code: 'CN', libelle: 'Journal CNSS / AMO' },
+  ];
+  const companyIds = db.prepare('SELECT id FROM companies').all().map((c) => c.id);
+  const missingRows = [];
+  for (const companyId of companyIds) {
+    for (const j of STANDARD_JOURNALS) {
+      missingRows.push([companyId, j.code, j.libelle]);
+    }
+  }
+  if (missingRows.length) {
+    db.insertMany('INSERT OR IGNORE INTO journals (company_id, code, libelle)', missingRows);
+  }
+}
+
 
 module.exports = { db, isNewDatabase: !dbExists };
