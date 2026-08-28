@@ -1,4 +1,4 @@
-import { createWorker } from 'tesseract.js';
+import { createWorker, PSM } from 'tesseract.js';
 import { loadPdf, extractPdfPage, fileToCanvas, preprocessCanvasForOcr, upscaleCanvasIfSmall } from './pdfExtract';
 
 let sharedWorker = null;
@@ -22,6 +22,39 @@ function textToRows(text) {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => line.split(/\s{2,}/).map((c) => c.trim()).filter(Boolean));
+}
+
+// Par défaut, Tesseract analyse la page en mode "entièrement automatique"
+// (PSM.AUTO) — livré tel quel, ce mode s'avère très inégal sur un document
+// structuré en plusieurs blocs encadrés (cartouches FACTURE/société,
+// tableau des lignes, pavé de totaux HT/TVA/TTC) : des blocs entiers de
+// texte peuvent être purement et simplement ignorés par l'analyse de mise
+// en page, notamment le pavé de totaux, plutôt que mal lus — vérifié en
+// comparant le texte brut obtenu avec/sans mode de segmentation explicite
+// sur un exemple de facture avec pavé de totaux encadré : la date, l'ICE et
+// tout le tableau des lignes n'apparaissaient dans AUCUNE sortie sans ce
+// réglage. PSM.SINGLE_BLOCK ("bloc de texte uniforme") récupère nettement
+// plus de contenu sur ce type de document. On fait aussi un second passage
+// en PSM.SPARSE_TEXT ("texte épars"), meilleur pour retrouver un pavé de
+// totaux isolé que le premier passage aurait manqué, et on fusionne les
+// lignes des deux passages plutôt que de choisir arbitrairement — les
+// lignes en trop ne gênent pas l'extraction (extractFactureFields ne
+// prélève que ce qui correspond à ses motifs, où qu'il apparaisse), alors
+// qu'une ligne manquante empêche toute détection.
+const PSM_MULTI_PASS = [PSM.SINGLE_BLOCK, PSM.SPARSE_TEXT];
+
+async function recognizeMultiPass(worker, canvas, psmList) {
+  let combinedText = '';
+  for (const psm of psmList) {
+    await worker.setParameters({ tessedit_pageseg_mode: psm });
+    const { data } = await worker.recognize(canvas);
+    combinedText += (combinedText ? '\n' : '') + data.text;
+  }
+  // Remet le mode par défaut pour ne pas affecter un appel ultérieur
+  // (extractDocument, utilisé ailleurs pour d'autres types de documents,
+  // par exemple les relevés bancaires) qui n'a pas demandé ce réglage.
+  await worker.setParameters({ tessedit_pageseg_mode: PSM.AUTO });
+  return combinedText;
 }
 
 export async function extractDocument(file, { onStatus, onProgress } = {}) {
@@ -77,8 +110,8 @@ export async function extractDocumentPages(file, { onStatus, onProgress } = {}) 
       if (needsOcr) {
         onStatus?.(`Page ${pageNumber} / ${pdf.numPages} scannée — reconnaissance OCR en cours…`);
         const worker = await getOcrWorker((p) => onProgress?.(Math.round(((pageNumber - 1 + p / 100) / pdf.numPages) * 100)));
-        const { data } = await worker.recognize(preprocessCanvasForOcr(canvas));
-        rows = textToRows(data.text);
+        const text = await recognizeMultiPass(worker, preprocessCanvasForOcr(canvas), PSM_MULTI_PASS);
+        rows = textToRows(text);
       }
       const text = rows.map((r) => r.join(' ')).join('\n');
       pages.push({ text, rows });
@@ -91,7 +124,7 @@ export async function extractDocumentPages(file, { onStatus, onProgress } = {}) 
   onStatus?.('Reconnaissance OCR en cours…');
   const worker = await getOcrWorker(onProgress);
   const imageCanvas = preprocessCanvasForOcr(upscaleCanvasIfSmall(await fileToCanvas(file)));
-  const { data } = await worker.recognize(imageCanvas);
-  const rows = textToRows(data.text);
-  return [{ text: data.text, rows }];
+  const text = await recognizeMultiPass(worker, imageCanvas, PSM_MULTI_PASS);
+  const rows = textToRows(text);
+  return [{ text, rows }];
 }
