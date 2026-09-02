@@ -361,10 +361,32 @@ export function extractFactureFields(text, rows) {
     montantHt = Math.round((ttc - tva.montant) * 100) / 100;
   }
 
+  // Le montant de la TVA lui-même n'est pas toujours lisible séparément par
+  // l'OCR (case isolée du tableau des totaux, souvent plus petite et donc
+  // moins nette) alors que le HT et le TTC, eux, le sont — il se déduit
+  // pourtant simplement de leur différence dès que les deux sont connus,
+  // plutôt que de rester vide alors que toutes les données sont là.
+  let montantTva = tva.montant;
+  if (montantTva == null && montantHt != null && ttc != null) {
+    montantTva = Math.round((ttc - montantHt) * 100) / 100;
+  }
+  // De même, le taux peut se déduire de HT/TVA quand il n'a pas été lu
+  // directement (ex : "20%" mal reconnu par l'OCR), plutôt que de retomber
+  // uniquement sur la valeur par défaut 20% choisie plus haut.
+  if ((taux == null || taux === '20') && montantHt > 0 && montantTva != null) {
+    const tauxCalcule = Math.round((montantTva / montantHt) * 100);
+    // On ne remplace le défaut 20% que si le taux calculé est un des taux
+    // marocains usuels et diffère du défaut — pour ne pas remplacer un 20%
+    // correct par un 20% "recalculé" à 19 ou 21 à cause d'arrondis OCR.
+    if ([0, 7, 10, 14, 20].includes(tauxCalcule) && String(tauxCalcule) !== String(taux)) {
+      taux = String(tauxCalcule);
+    }
+  }
+
   return {
     montant_ht: montantHt,
     montant_ttc: ttc,
-    montant_tva: tva.montant,
+    montant_tva: montantTva,
     taux_tva: taux,
     date_facture: date,
     numero_piece: numero,
