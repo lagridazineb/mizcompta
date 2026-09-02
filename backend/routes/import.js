@@ -32,6 +32,10 @@ function pick(row, ...keys) {
   return '';
 }
 
+function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
 function excelDateToISO(value) {
   if (!value) return '';
   const s = String(value).trim();
@@ -168,7 +172,6 @@ router.post('/companies/:companyId/import/ecritures', upload.single('file'), (re
   function findFiscalYear(date) {
     return fiscalYears.find((fy) => date >= fy.date_debut && date <= fy.date_fin);
   }
-
   // Regroupement des lignes en écritures
   const groups = new Map();
   const rowErrors = [];
@@ -208,6 +211,52 @@ router.post('/companies/:companyId/import/ecritures', upload.single('file'), (re
   const insertLine = db.prepare(
     `INSERT INTO journal_lines (entry_id, account_id, debit, credit, tiers) VALUES (?, ?, ?, ?, ?)`
   );
+
+  function generateLettrageCode() {
+    return 'L' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 36).toString(36).toUpperCase();
+  }
+
+  // Une facture d'achat réglée en espèces est soldée dès l'instant du
+  // règlement, exactement comme la saisie manuelle ou l'import "Factures"
+  // le font déjà (voir createFactureRecord dans factures.js) : elle ne doit
+  // pas apparaître comme une dette fournisseur ouverte. L'import générique
+  // d'écritures, lui, ne connaissait pas cette règle et laissait toutes les
+  // lignes tiers non lettrées, y compris quand le fichier contient à la
+  // fois la ligne facture (crédit fournisseur) et sa ligne de règlement
+  // espèces (débit fournisseur, en contrepartie d'une caisse 516x) — d'où
+  // des factures pourtant payées comptant qui restaient affichées comme
+  // "non soldées" après import. On repère donc, une fois toutes les
+  // écritures du fichier créées, les lignes fournisseur/client d'une
+  // écriture de règlement en espèces (une des lignes de l'écriture touche
+  // un compte 516x) et on les lettre avec la ligne d'origine correspondante
+  // (même compte, même tiers, montant opposé et égal, pas encore lettrée),
+  // qu'elle vienne de ce même fichier ou d'une facture déjà saisie
+  // auparavant.
+  const findContrepartieCaisse = db.prepare(
+    `SELECT jl.id FROM journal_lines jl
+     JOIN accounts a ON a.id = jl.account_id
+     WHERE jl.entry_id = ? AND a.numero LIKE '516%'`
+  );
+  const findLigneALettrer = db.prepare(
+    `SELECT jl.id FROM journal_lines jl
+     WHERE jl.account_id = ? AND jl.tiers = ? AND jl.lettrage IS NULL AND jl.entry_id != ?
+       AND ROUND(jl.debit, 2) = ? AND ROUND(jl.credit, 2) = ?
+     ORDER BY jl.id ASC LIMIT 1`
+  );
+  const setLettrage = db.prepare('UPDATE journal_lines SET lettrage = ? WHERE id = ?');
+
+  function lettrerSiRegleEnEspeces(entryId, ligneTiersId, accountId, tiersLabel, debit, credit) {
+    if (!tiersLabel) return;
+    const aUneCaisse = findContrepartieCaisse.all(entryId).length > 0;
+    if (!aUneCaisse) return;
+    // La ligne à retrouver a le montant inverse (débit <-> crédit) de la
+    // ligne de règlement, sur le même compte tiers.
+    const match = findLigneALettrer.get(accountId, tiersLabel, entryId, round2(credit), round2(debit));
+    if (!match) return;
+    const code = generateLettrageCode();
+    setLettrage.run(code, ligneTiersId);
+    setLettrage.run(code, match.id);
+  }
 
   const runImport = db.transaction(() => {
     for (const group of groups.values()) {
@@ -253,8 +302,17 @@ router.post('/companies/:companyId/import/ecritures', upload.single('file'), (re
 
       const info = insertEntry.run(companyId, journal.id, fiscalYear.id, group.piece || null, group.date, group.libelle, req.user.id);
       const entryId = info.lastInsertRowid;
-      for (const l of resolvedLines) insertLine.run(entryId, l.account_id, l.debit, l.credit, l.tiers);
+      const insertedLignes = resolvedLines.map((l) => ({
+        ...l,
+        lineId: insertLine.run(entryId, l.account_id, l.debit, l.credit, l.tiers).lastInsertRowid,
+      }));
       results.ecritures_creees += 1;
+
+      // Lettrage automatique des lignes tiers de cette écriture si elle
+      // comporte un règlement en espèces (voir lettrerSiRegleEnEspeces).
+      for (const l of insertedLignes) {
+        if (l.tiers) lettrerSiRegleEnEspeces(entryId, l.lineId, l.account_id, l.tiers, l.debit, l.credit);
+      }
     }
   });
   runImport();
