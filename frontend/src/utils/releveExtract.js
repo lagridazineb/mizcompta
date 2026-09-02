@@ -1,19 +1,7 @@
 import { createWorker } from 'tesseract.js';
-import { loadPdf, extractPdfPagePositioned, renderPageToCanvas, fileToCanvas, preprocessCanvasForOcr } from './pdfExtract';
+import { loadPdf, extractPdfPagePositioned, renderPageToCanvas, fileToCanvas, preprocessCanvasForOcr, upscaleCanvasIfSmall } from './pdfExtract';
 
-// Extraction des opérations d'un relevé bancaire marocain (CIH, Attijari,
-// BMCE, Bank Of Africa, Banque Populaire, CFG, Saham…) à partir des lignes
-// positionnées d'un PDF texte (voir extractPdfPagePositioned dans
-// pdfExtract.js). Le repère clé : une même ligne ne contient JAMAIS deux
-// montants (une opération est soit un débit, soit un crédit) — on utilise
-// donc la position x du montant pour savoir dans quelle colonne il tombe.
 
-// Un OCR même de bonne qualité confond régulièrement certaines lettres et
-// chiffres qui se ressemblent (O/0, G/6, S/5, B/8, I·l/1, Z/2) — surtout
-// sur un scan de qualité moyenne. On ne corrige cette confusion que dans
-// les jetons COURTS et MAJORITAIREMENT numériques (donc très probablement
-// une date ou un montant mal lus), jamais dans un mot ordinaire, pour ne
-// pas corrompre les libellés.
 const CONFUSIONS_OCR = { O: '0', o: '0', I: '1', l: '1', S: '5', s: '5', B: '8', G: '6', g: '6', Z: '2', z: '2' };
 function normaliserJetonNumerique(token) {
   if (!token || token.length > 8) return token;
@@ -23,17 +11,8 @@ function normaliserJetonNumerique(token) {
   return car.map((c) => CONFUSIONS_OCR[c] || c).join('');
 }
 
-// Montant : accepte indifféremment le format marocain/français ("20 000,00"
-// ou "20.000,00", séparateur de milliers espace/point, décimales avec
-// virgule) ET le format anglo-saxon utilisé par certaines banques comme CFG
-// ("1,330.15", virgule pour les milliers, point pour les décimales) — les
-// deux se distinguent uniquement au moment de la conversion (toNumber), pas
-// à la détection, donc on accepte virgule ET point comme séparateur.
 const MONTANT_RE = /^\d{1,3}(?:[\s.,\u00A0]\d{3})*[.,]\d{2}$/;
-// Repli tolérant : la même chose mais en autorisant un caractère parasite
-// isolé (une marque de scan mal filtrée) avant ou après le nombre lui-même
-// — utilisé cellule par cellule pour ne pas perdre une ligne entière à
-// cause d'un seul caractère de bruit collé au montant par l'OCR.
+
 const MONTANT_TOLERANT_RE = /^.{0,2}?(\d{1,3}(?:[\s.,\u00A0]\d{3})*[.,]\d{2}).{0,2}$/;
 
 function montantDeCellule(text) {
@@ -63,6 +42,56 @@ const MOTS_CREDIT = /remise|versement|encaissement/i;
 const MOTS_DEBIT_FAIBLE = /paiement|retrait|cheque\s*n/i;
 
 const LIGNES_A_IGNORER = /\bsolde\b|total\s*(des\s*)?mouvements?|page\s*n|^dates?$|oper\s*valeur/i;
+
+// Solde initial ("ancien solde", "solde précédent", "solde de départ"…) et
+// solde final ("nouveau solde", "solde de clôture"…) : ces lignes sont
+// délibérément exclues des OPÉRATIONS (LIGNES_A_IGNORER ci-dessus, une ligne
+// de solde n'est pas un mouvement) mais elles portent une information utile
+// à afficher et à vérifier — le solde de départ doit en particulier
+// correspondre à ce que Saisie Relevé Bancaire calcule à partir des
+// écritures déjà enregistrées, et un écart révèle un mouvement manquant. Les
+// libellés varient beaucoup d'une banque marocaine à l'autre, d'où la liste
+// assez large de synonymes.
+const RE_SOLDE_INITIAL = /solde\s*(?:ancien|initial|pr[ée]c[ée]dent|de\s*d[ée]part|au\s*d[ée]but|d[ée]but\s*de\s*p[ée]riode)|ancien\s*solde|report\s*(?:de\s*)?solde/i;
+const RE_SOLDE_FINAL = /solde\s*(?:final|nouveau|de\s*cl[ôo]ture|actuel|fin\s*de\s*p[ée]riode|arr[êe]t[ée]?)|nouveau\s*solde/i;
+
+// Cherche, parmi des lignes positionnées ({ text, x }[][]), une ligne dont le
+// texte correspond au libellé recherché, puis le DERNIER montant de cette
+// ligne (le solde est en général le seul ou le dernier nombre de la ligne —
+// une éventuelle date de valeur qui précède n'a pas le format décimal d'un
+// montant et n'est donc jamais confondue avec lui par montantDeCellule).
+function soldeDepuisLignes(rows, labelRegex) {
+  for (const row of rows || []) {
+    const texteLigne = row.map((c) => c.text).join(' ');
+    if (!labelRegex.test(texteLigne)) continue;
+    const montants = row.map((c) => montantDeCellule(c.text)).filter(Boolean);
+    if (montants.length > 0) return toNumber(montants[montants.length - 1]);
+  }
+  return null;
+}
+
+// Repli en texte brut (pas de lignes positionnées disponibles — OCR sans
+// bounding boxes, ou relevé texte simple) : même principe, ligne par ligne.
+function soldeDepuisTexte(texte, labelRegex) {
+  for (const ligneBrute of (texte || '').split(/\r?\n/)) {
+    const ligne = ligneBrute.trim();
+    if (!ligne || !labelRegex.test(ligne)) continue;
+    const montants = [...ligne.matchAll(/(\d{1,3}(?:[\s.,\u00A0]\d{3})*[.,]\d{2})/g)];
+    if (montants.length > 0) return toNumber(montants[montants.length - 1][1]);
+  }
+  return null;
+}
+
+// Extrait le solde initial et le solde final d'une page, en préférant les
+// lignes positionnées (plus fiables : le montant est isolé dans sa propre
+// cellule) et en repliant sur le texte brut si elles ne sont pas
+// disponibles ou n'ont rien donné.
+export function extraireSoldesDePage(rows, texteLigne) {
+  return {
+    soldeInitial: soldeDepuisLignes(rows, RE_SOLDE_INITIAL) ?? soldeDepuisTexte(texteLigne, RE_SOLDE_INITIAL),
+    soldeFinal: soldeDepuisLignes(rows, RE_SOLDE_FINAL) ?? soldeDepuisTexte(texteLigne, RE_SOLDE_FINAL),
+  };
+}
 
 function deviner_sens(libelle) {
   if (MOTS_DEBIT.test(libelle)) return 'debit';
@@ -368,12 +397,20 @@ function linesFromOcrBlocks(blocks) {
 // n'est disponible (config sans `blocks: true`, ou page vide), on retombe
 // sur le texte brut ligne à ligne (ancien comportement, moins précis).
 export function parseReleveDepuisResultatOcr(ocrData, texteComplet) {
-  const ocrLines = linesFromOcrBlocks(ocrData?.blocks);
-  if (ocrLines.length === 0) {
-    return parseReleveDepuisTexte(ocrData?.text || texteComplet || '');
-  }
-  const rows = ocrLines.map((line) => groupOcrWordsIntoCells(line.words));
+  const rows = lignesDepuisResultatOcr(ocrData);
+  if (!rows) return parseReleveDepuisTexte(ocrData?.text || texteComplet || '');
   return parseReleveDepuisLignesPositionnees(rows, texteComplet || ocrData?.text || '');
+}
+
+// Reconstruit les lignes { text, x }[][] à partir d'un résultat Tesseract
+// (voir parseReleveDepuisResultatOcr) — extrait à part pour pouvoir aussi
+// s'en servir pour repérer les lignes de solde (extraireSoldesDePage), qui
+// ont besoin des mêmes lignes positionnées que la reconnaissance des
+// opérations, sans refaire l'OCR une seconde fois.
+function lignesDepuisResultatOcr(ocrData) {
+  const ocrLines = linesFromOcrBlocks(ocrData?.blocks);
+  if (ocrLines.length === 0) return null;
+  return ocrLines.map((line) => groupOcrWordsIntoCells(line.words));
 }
 
 // Extraction complète d'un fichier de relevé bancaire (PDF ou image) : lit
@@ -389,6 +426,12 @@ export async function extractReleveDocument(file, { onStatus, onProgress } = {})
   let operations = [];
   let texteComplet = '';
   const pages = [];
+  // Solde initial : on garde le PREMIER trouvé (en général en tête de la
+  // première page). Solde final : on garde le DERNIER trouvé (chaque page
+  // peut afficher son propre "nouveau solde" intermédiaire ; seul celui de
+  // la toute dernière page correspond au solde de clôture réel du relevé).
+  let soldeInitial = null;
+  let soldeFinal = null;
 
   async function ocrImage(image, lang) {
     const worker = await createWorker(lang, 1, {
@@ -417,7 +460,8 @@ export async function extractReleveDocument(file, { onStatus, onProgress } = {})
     const [eng, fra] = await Promise.all([ocrImage(image, 'eng'), ocrImage(image, 'fra')]);
     const opsEng = parseReleveDepuisResultatOcr(eng, texteAvant + (eng.text || ''));
     const opsFra = parseReleveDepuisResultatOcr(fra, texteAvant + (fra.text || ''));
-    return opsEng.length >= opsFra.length ? { data: eng, ops: opsEng } : { data: fra, ops: opsFra };
+    const gagnant = opsEng.length >= opsFra.length ? { data: eng, ops: opsEng } : { data: fra, ops: opsFra };
+    return { ...gagnant, rows: lignesDepuisResultatOcr(gagnant.data) };
   }
 
   if (isPdf) {
@@ -426,31 +470,47 @@ export async function extractReleveDocument(file, { onStatus, onProgress } = {})
       onStatus?.(`Lecture de la page ${pageNumber} / ${pdf.numPages}…`);
       const { rows, needsOcr } = await extractPdfPagePositioned(pdf, pageNumber);
       let pageOps;
+      let pageRows = rows;
+      let pageTexte = '';
       if (!needsOcr && rows.length > 0) {
-        texteComplet += rows.map((r) => r.map((c) => c.text).join(' ')).join('\n') + '\n';
+        pageTexte = rows.map((r) => r.map((c) => c.text).join(' ')).join('\n');
+        texteComplet += pageTexte + '\n';
         pageOps = parseReleveDepuisLignesPositionnees(rows, texteComplet);
       } else {
         onStatus?.(`Page ${pageNumber} / ${pdf.numPages} scannée — reconnaissance OCR en cours…`);
         const page = await pdf.getPage(pageNumber);
         const canvas = preprocessCanvasForOcr(await renderPageToCanvas(page));
-        const { data, ops } = await meilleurOcr(canvas, texteComplet);
-        texteComplet += (data.text || '') + '\n';
+        const { data, ops, rows: ocrRows } = await meilleurOcr(canvas, texteComplet);
+        pageTexte = data.text || '';
+        texteComplet += pageTexte + '\n';
         pageOps = ops;
+        pageRows = ocrRows;
       }
       pageOps = pageOps.map((op) => ({ ...op, page: pageNumber }));
       pages.push({ page: pageNumber, count: pageOps.length });
       operations = operations.concat(pageOps);
+      // Solde initial/final : on cherche sur CHAQUE page (pas seulement la
+      // première/dernière), certains relevés répétant le solde de départ en
+      // en-tête de chaque page ou n'affichant le solde de clôture qu'en pied
+      // de la dernière — voir le commentaire au début de la fonction pour la
+      // règle de choix entre plusieurs valeurs trouvées.
+      const soldesPage = extraireSoldesDePage(pageRows, pageTexte);
+      if (soldeInitial == null && soldesPage.soldeInitial != null) soldeInitial = soldesPage.soldeInitial;
+      if (soldesPage.soldeFinal != null) soldeFinal = soldesPage.soldeFinal;
     }
   } else {
     onStatus?.('Reconnaissance OCR en cours…');
-    const canvas = preprocessCanvasForOcr(await fileToCanvas(file));
-    const { data, ops } = await meilleurOcr(canvas, '');
+    const canvas = preprocessCanvasForOcr(upscaleCanvasIfSmall(await fileToCanvas(file)));
+    const { data, ops, rows } = await meilleurOcr(canvas, '');
     texteComplet = data.text || '';
     operations = ops.map((op) => ({ ...op, page: 1 }));
     pages.push({ page: 1, count: operations.length });
+    const soldes = extraireSoldesDePage(rows, texteComplet);
+    soldeInitial = soldes.soldeInitial;
+    soldeFinal = soldes.soldeFinal;
   }
 
-  return { operations, texteComplet, pages };
+  return { operations, texteComplet, pages, soldeInitial, soldeFinal };
 }
 // un seul montant en fin de ligne, signe déduit par mots-clés.
 export function parseReleveDepuisTexte(text) {
