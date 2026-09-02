@@ -7,6 +7,7 @@ import FacturesLignesTable from '../components/FacturesLignesTable';
 import { extractDocument, extractDocumentPages } from '../utils/documentText';
 import { extractFactureFields } from '../utils/factureExtract';
 import { extractReleveDocument } from '../utils/releveExtract';
+import { loadPdf } from '../utils/pdfExtract';
 import { TAUX_TVA } from '../constants/tauxTva';
 import { nextTiersNumero } from '../utils/tiersNumero';
 import DateInputFR from '../components/DateInputFR';
@@ -298,9 +299,34 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
     return () => URL.revokeObjectURL(url);
   }, [current?.file, current?.id]);
   const fileEstPdf = current?.file && (current.file.type === 'application/pdf' || current.file.name.toLowerCase().endsWith('.pdf'));
+
+  // Navigation page par page DANS l'aperçu, indépendante de la file de
+  // factures détectées : sur un PDF de plusieurs pages, la page affichée
+  // suit d'abord la facture courante (current.page), mais peut ensuite être
+  // parcourue page par page avec les boutons Précédente/Suivante — y compris
+  // vers une page que l'analyse automatique aurait ignorée (page blanche,
+  // annotation manuscrite non reconnue…) et qui n'a donc pas d'entrée dans
+  // la file, exactement comme pour le relevé bancaire.
+  const [previewPage, setPreviewPage] = useState(1);
+  const [previewNbPages, setPreviewNbPages] = useState(1);
+  useEffect(() => {
+    setPreviewPage(current?.page || 1);
+    if (!current?.file || !fileEstPdf) {
+      setPreviewNbPages(1);
+      return;
+    }
+    let cancelled = false;
+    loadPdf(current.file).then((pdf) => {
+      if (!cancelled) setPreviewNbPages(pdf.numPages);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current?.file, current?.id]);
   // Pour un PDF regroupant plusieurs factures (une par page), on pointe
-  // directement le lecteur PDF sur la bonne page grâce au fragment #page=N.
-  const previewUrl = fileUrl && fileEstPdf && current?.page ? `${fileUrl}#page=${current.page}` : fileUrl;
+  // directement le lecteur PDF sur la page choisie grâce au fragment #page=N.
+  const previewUrl = fileUrl && fileEstPdf ? `${fileUrl}#page=${previewPage}` : fileUrl;
 
   return (
     <div className="scan-facture-split" style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
@@ -556,21 +582,45 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
           style={{ flex: '0 0 440px', flexShrink: 0, width: 440, maxWidth: '100%', position: 'sticky', top: 12, alignSelf: 'flex-start' }}
         >
           <div className="card" style={{ padding: 10 }}>
-            <h2 style={{ fontSize: 14, marginTop: 0 }}>
-              Document original{current?.page ? ` — page ${current.page}` : ''}
-            </h2>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <h2 style={{ fontSize: 14, marginTop: 0, marginBottom: 0 }}>
+                Document original{fileEstPdf && previewNbPages > 1 ? ` — page ${previewPage} / ${previewNbPages}` : ''}
+              </h2>
+              {fileEstPdf && previewNbPages > 1 && (
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    style={{ padding: '2px 8px', fontSize: 12 }}
+                    disabled={previewPage <= 1}
+                    onClick={() => setPreviewPage((p) => Math.max(1, p - 1))}
+                  >
+                    ← Précédente
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    style={{ padding: '2px 8px', fontSize: 12 }}
+                    disabled={previewPage >= previewNbPages}
+                    onClick={() => setPreviewPage((p) => Math.min(previewNbPages, p + 1))}
+                  >
+                    Suivante →
+                  </button>
+                </div>
+              )}
+            </div>
             {fileEstPdf ? (
               <iframe
                 key={previewUrl}
                 src={previewUrl}
                 title="Facture originale"
-                style={{ width: '100%', height: '82vh', border: '1px solid var(--border)', borderRadius: 6 }}
+                style={{ width: '100%', height: '82vh', border: '1px solid var(--border)', borderRadius: 6, marginTop: 8 }}
               />
             ) : (
               <img
                 src={previewUrl}
                 alt="Facture originale"
-                style={{ width: '100%', maxHeight: '82vh', objectFit: 'contain', borderRadius: 6, border: '1px solid var(--border)' }}
+                style={{ width: '100%', maxHeight: '82vh', objectFit: 'contain', borderRadius: 6, border: '1px solid var(--border)', marginTop: 8 }}
               />
             )}
           </div>
@@ -589,6 +639,9 @@ function ReleveScanTab({ activeCompany, activeFiscalYear }) {
   const [scanning, setScanning] = useState(false);
   const [operations, setOperations] = useState([]);
   const [pagesInfo, setPagesInfo] = useState([]);
+  const [soldeInitial, setSoldeInitial] = useState(null);
+  const [soldeFinal, setSoldeFinal] = useState(null);
+  const [previewPage, setPreviewPage] = useState(1);
   const [compteTresorNumero, setCompteTresorNumero] = useState('');
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState(null);
@@ -620,13 +673,18 @@ function ReleveScanTab({ activeCompany, activeFiscalYear }) {
     setError('');
     setResult(null);
     setPagesInfo([]);
+    setSoldeInitial(null);
+    setSoldeFinal(null);
+    setPreviewPage(1);
     setScanning(true);
     setStatus('Préparation…');
     setProgress(0);
     try {
-      const { operations: ops, pages } = await extractReleveDocument(file, { onStatus: setStatus, onProgress: setProgress });
+      const { operations: ops, pages, soldeInitial: si, soldeFinal: sf } = await extractReleveDocument(file, { onStatus: setStatus, onProgress: setProgress });
       setOperations(ops.map((o) => ({ ...o, include: true })));
       setPagesInfo(pages || []);
+      setSoldeInitial(si != null ? si : null);
+      setSoldeFinal(sf != null ? sf : null);
       if (ops.length === 0) {
         setError("Aucune opération n'a pu être détectée automatiquement. Vérifiez que le fichier est bien un relevé de compte, ou ajoutez les lignes manuellement ci-dessous.");
       }
@@ -672,12 +730,23 @@ function ReleveScanTab({ activeCompany, activeFiscalYear }) {
     return () => URL.revokeObjectURL(url);
   }, [file]);
   const fileEstPdf = file && (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'));
-
+  // Fragment #page=N pour faire pointer directement le lecteur PDF sur la
+  // page choisie (voir boutons Précédente/Suivante dans l'aperçu, à droite) —
+  // même principe que pour le Scan de factures, où chaque facture de la file
+  // pointe déjà sa propre page.
+  const nbPages = pagesInfo.length || 1;
+  const previewUrl = fileUrl && fileEstPdf && nbPages > 1 ? `${fileUrl}#page=${previewPage}` : fileUrl;
 
   const totaux = operations.reduce(
     (acc, o) => (o.include ? { debit: acc.debit + (Number(o.debit) || 0), credit: acc.credit + (Number(o.credit) || 0) } : acc),
     { debit: 0, credit: 0 }
   );
+  // Comparaison du solde de clôture déclaré par la banque (lu sur le
+  // document) avec celui recalculé à partir du solde de départ déclaré et
+  // des mouvements sélectionnés — un écart signale une opération mal lue ou
+  // oubliée, sans empêcher l'import (l'utilisateur reste juge).
+  const soldeFinalRecalcule = soldeInitial != null ? Math.round((soldeInitial + totaux.debit - totaux.credit) * 100) / 100 : null;
+  const soldesCoherents = soldeFinal != null && soldeFinalRecalcule != null ? Math.abs(soldeFinal - soldeFinalRecalcule) < 0.01 : null;
 
   async function handleImport() {
     setError('');
@@ -759,6 +828,55 @@ function ReleveScanTab({ activeCompany, activeFiscalYear }) {
             )}
           </p>
         )}
+        {pagesInfo.length > 0 && (
+          <div className="card" style={{ background: 'var(--ink-800)', boxShadow: 'none', marginTop: 10 }}>
+            <h2 style={{ fontSize: 14, marginTop: 0 }}>Soldes du relevé</h2>
+            <p className="text-muted" style={{ fontSize: 12, marginTop: -6 }}>
+              Détectés automatiquement quand possible — corrigez-les ici si besoin (montant mal lu ou absent du scan) ;
+              cela met immédiatement à jour le solde final recalculé et le contrôle de cohérence ci-dessous.
+            </p>
+            <div className="grid-3" style={{ fontSize: 13.5 }}>
+              <div className="field" style={{ margin: 0 }}>
+                <label style={{ fontSize: 12 }}>Solde initial (relevé)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  className="num"
+                  placeholder="non détecté"
+                  value={soldeInitial != null ? soldeInitial : ''}
+                  onChange={(e) => setSoldeInitial(e.target.value === '' ? null : Number(e.target.value))}
+                />
+              </div>
+              <div className="field" style={{ margin: 0 }}>
+                <label style={{ fontSize: 12 }}>Solde final (relevé)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  className="num"
+                  placeholder="non détecté"
+                  value={soldeFinal != null ? soldeFinal : ''}
+                  onChange={(e) => setSoldeFinal(e.target.value === '' ? null : Number(e.target.value))}
+                />
+              </div>
+              <div>
+                <div className="text-muted" style={{ fontSize: 12 }}>Solde final recalculé</div>
+                <strong className="num">{soldeFinalRecalcule != null ? `${soldeFinalRecalcule.toFixed(2)} DH` : '—'}</strong>
+              </div>
+            </div>
+            {soldesCoherents === false && (
+              <p style={{ color: 'var(--debit)', fontSize: 12.5, marginBottom: 0, marginTop: 8 }}>
+                ⚠ Le solde final ({soldeFinal.toFixed(2)} DH) ne correspond pas au solde initial + mouvements
+                sélectionnés ({soldeFinalRecalcule.toFixed(2)} DH) — une opération a probablement été mal lue ou
+                oubliée : vérifiez le tableau ci-dessous avant d'importer.
+              </p>
+            )}
+            {soldesCoherents === true && (
+              <p style={{ color: 'var(--credit, #7ea476)', fontSize: 12.5, marginBottom: 0, marginTop: 8 }}>
+                ✓ Le solde recalculé correspond au solde final indiqué.
+              </p>
+            )}
+          </div>
+        )}
         {result && (
           <div className="alert alert-notice">
             {result.imported} écriture(s) importée(s) avec succès — elles apparaissent maintenant dans le journal (Écritures)
@@ -819,7 +937,23 @@ function ReleveScanTab({ activeCompany, activeFiscalYear }) {
                       onChange={(e) => updateOp(i, { include: e.target.checked })}
                     />
                   </td>
-                  <td className="text-muted">{o.manuel ? 'manuel' : o.page || '—'}</td>
+                  <td className="text-muted">
+                    {o.manuel ? (
+                      'manuel'
+                    ) : o.page ? (
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        style={{ padding: '1px 6px', fontSize: 12 }}
+                        title="Voir cette page dans l'aperçu à droite"
+                        onClick={() => setPreviewPage(o.page)}
+                      >
+                        {o.page}
+                      </button>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
                   <td>
                     <DateInputFR value={o.date} onChange={(e) => updateOp(i, { date: e.target.value })} style={{ width: 130 }} />
                   </td>
@@ -878,18 +1012,45 @@ function ReleveScanTab({ activeCompany, activeFiscalYear }) {
           style={{ flex: '0 0 440px', flexShrink: 0, width: 440, maxWidth: '100%', position: 'sticky', top: 12, alignSelf: 'flex-start' }}
         >
           <div className="card" style={{ padding: 10 }}>
-            <h2 style={{ fontSize: 14, marginTop: 0 }}>Document original</h2>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <h2 style={{ fontSize: 14, marginTop: 0, marginBottom: 0 }}>
+                Document original{fileEstPdf && nbPages > 1 ? ` — page ${previewPage} / ${nbPages}` : ''}
+              </h2>
+              {fileEstPdf && nbPages > 1 && (
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    style={{ padding: '2px 8px', fontSize: 12 }}
+                    disabled={previewPage <= 1}
+                    onClick={() => setPreviewPage((p) => Math.max(1, p - 1))}
+                  >
+                    ← Précédente
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    style={{ padding: '2px 8px', fontSize: 12 }}
+                    disabled={previewPage >= nbPages}
+                    onClick={() => setPreviewPage((p) => Math.min(nbPages, p + 1))}
+                  >
+                    Suivante →
+                  </button>
+                </div>
+              )}
+            </div>
             {fileEstPdf ? (
               <iframe
-                src={fileUrl}
+                key={previewUrl}
+                src={previewUrl}
                 title="Relevé original"
-                style={{ width: '100%', height: '82vh', border: '1px solid var(--border)', borderRadius: 6 }}
+                style={{ width: '100%', height: '82vh', border: '1px solid var(--border)', borderRadius: 6, marginTop: 8 }}
               />
             ) : (
               <img
                 src={fileUrl}
                 alt="Relevé original"
-                style={{ width: '100%', maxHeight: '82vh', objectFit: 'contain', borderRadius: 6, border: '1px solid var(--border)' }}
+                style={{ width: '100%', maxHeight: '82vh', objectFit: 'contain', borderRadius: 6, border: '1px solid var(--border)', marginTop: 8 }}
               />
             )}
           </div>
