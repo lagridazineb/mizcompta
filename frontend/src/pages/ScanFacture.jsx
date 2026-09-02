@@ -71,14 +71,23 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
 
   const load = useCallback(async () => {
     if (!activeCompany) return;
-    const [t, acc, f] = await Promise.all([
-      api.getTiers(activeCompany.id, tiersType),
-      api.getAccounts(activeCompany.id),
-      api.getFactures(activeCompany.id, mode),
-    ]);
-    setTiersList(t);
-    setAccounts(acc);
-    setFactures(f);
+    try {
+      const [t, acc, f] = await Promise.all([
+        api.getTiers(activeCompany.id, tiersType),
+        api.getAccounts(activeCompany.id),
+        api.getFactures(activeCompany.id, mode),
+      ]);
+      setTiersList(t);
+      setAccounts(acc);
+      setFactures(f);
+    } catch (err) {
+      // Un échec réseau ici laissait auparavant `accounts` vide en
+      // permanence (jamais réessayé) : le compte de trésorerie n'était donc
+      // proposé ni automatiquement, ni même dans la liste déroulante
+      // manuelle. On affiche l'erreur avec un bouton pour réessayer plutôt
+      // que d'échouer silencieusement.
+      setError(`Impossible de charger les données de la société (${tiersType === 'client' ? 'clients' : 'fournisseurs'}, comptes, factures) : ${err.message}`);
+    }
   }, [activeCompany, tiersType, mode]);
 
   useEffect(() => {
@@ -89,7 +98,7 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
     setError('');
   }, [load, mode]);
 
-  const tresorerieAccounts = useMemo(() => accounts.filter((a) => a.classe === 5 && a.numero.startsWith('51')), [accounts]);
+  const tresorerieAccounts = useMemo(() => accounts.filter((a) => Number(a.classe) === 5 && a.numero.startsWith('51')), [accounts]);
 
   // Construit une entrée de file d'attente (formulaire + libellé de source)
   // à partir des champs détectés sur UNE page/UN document.
@@ -101,7 +110,7 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
       tiersList.find((t) => nomCible && t.nom.trim().toLowerCase() === nomCible.trim().toLowerCase());
     const modeInfo = MODES_PAIEMENT.find((m) => m.label.toLowerCase() === (fields.mode_paiement || '').toLowerCase());
     const compteAuto = modeInfo
-      ? accounts.find((a) => a.classe === 5 && a.numero.startsWith(modeInfo.prefixeCompte === '516' ? '516' : modeInfo.prefixeCompte))
+      ? accounts.find((a) => Number(a.classe) === 5 && a.numero.startsWith(modeInfo.prefixeCompte === '516' ? '516' : modeInfo.prefixeCompte))
       : null;
 
     return {
@@ -354,7 +363,19 @@ function FactureScanTab({ mode, activeCompany, activeFiscalYear }) {
           {scanning ? `Analyse en cours… ${progress ? `${progress}%` : ''}` : `Analyser ${files.length > 1 ? `les ${files.length} documents` : 'le document'}`}
         </button>
         {scanning && status && <p className="text-muted" style={{ marginTop: 8 }}>{status}</p>}
-        {error && <div className="alert alert-error">{error}</div>}
+        {error && (
+          <div className="alert alert-error">
+            {error}
+            {accounts.length === 0 && (
+              <>
+                {' '}
+                <button type="button" className="btn btn-ghost" style={{ padding: '2px 8px', fontSize: 12 }} onClick={load}>
+                  Réessayer
+                </button>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {queue.length > 0 && (
@@ -648,13 +669,30 @@ function ReleveScanTab({ activeCompany, activeFiscalYear }) {
   const [moisImporte, setMoisImporte] = useState('');
   const [anneeImporte, setAnneeImporte] = useState('');
   const [error, setError] = useState('');
+  const [accountsError, setAccountsError] = useState('');
 
-  useEffect(() => {
+  const loadAccounts = useCallback(() => {
     if (!activeCompany) return;
-    api.getAccounts(activeCompany.id).then(setAccounts);
+    setAccountsError('');
+    api
+      .getAccounts(activeCompany.id)
+      .then(setAccounts)
+      .catch((err) => {
+        // Un échec ici laissait auparavant `accounts` vide en permanence
+        // (jamais réessayé) : le compte de trésorerie n'était donc proposé
+        // ni automatiquement (5141 par défaut), ni même dans la liste
+        // déroulante manuelle, qui restait sur "Sélectionner…" sans aucune
+        // option. On affiche l'erreur avec un bouton pour réessayer plutôt
+        // que d'échouer silencieusement.
+        setAccountsError(`Impossible de charger le plan comptable : ${err.message}`);
+      });
   }, [activeCompany]);
 
-  const tresorerieAccounts = useMemo(() => accounts.filter((a) => a.classe === 5 && a.numero.startsWith('51')), [accounts]);
+  useEffect(() => {
+    loadAccounts();
+  }, [loadAccounts]);
+
+  const tresorerieAccounts = useMemo(() => accounts.filter((a) => Number(a.classe) === 5 && a.numero.startsWith('51')), [accounts]);
 
   // Compte Trésor présélectionné automatiquement sur 5141 (Banques, soldes
   // débiteurs) dès que les comptes sont chargés — c'est de très loin le compte
@@ -911,6 +949,20 @@ function ReleveScanTab({ activeCompany, activeFiscalYear }) {
                 </option>
               ))}
             </select>
+            {accountsError && (
+              <p style={{ color: 'var(--debit)', fontSize: 12.5, marginTop: 6, marginBottom: 0 }}>
+                {accountsError}{' '}
+                <button type="button" className="btn btn-ghost" style={{ padding: '2px 8px', fontSize: 12 }} onClick={loadAccounts}>
+                  Réessayer
+                </button>
+              </p>
+            )}
+            {!accountsError && tresorerieAccounts.length === 0 && (
+              <p className="text-muted" style={{ fontSize: 12.5, marginTop: 6, marginBottom: 0 }}>
+                Aucun compte de trésorerie (514x banque / 516x caisse) trouvé dans le plan comptable de cette société —
+                créez-en un (Paramètres &gt; Plan comptable) pour pouvoir sélectionner ici le compte bancaire concerné.
+              </p>
+            )}
           </div>
 
           <div style={{ overflowX: 'auto' }}>
