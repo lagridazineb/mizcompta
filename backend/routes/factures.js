@@ -566,7 +566,15 @@ router.post('/companies/:companyId/import/factures', require('multer')({ storage
     const facture_numero = pick(row, 'facture n°', 'facture n', 'facture', 'numero_piece', 'numero');
     const clientNom = pick(row, 'client', 'fournisseur', 'nom');
     const ice = pick(row, 'ice');
-    const montantStr = pick(row, 'montant');
+    // Montant : on préfère une colonne TTC explicite ("Montant (TTC)",
+    // "Montant ttc", "TTC"…), et on ne retombe sur le HT que si aucune
+    // colonne TTC n'est présente — les libellés de colonnes varient d'un
+    // fichier à l'autre (parenthèses ou non, avec ou sans espace…), d'où la
+    // liste de variantes ci-dessous plutôt qu'un seul nom de colonne exact.
+    const montantTtcStr = pick(row, 'montant (ttc)', 'montant ttc', 'montant_ttc', 'ttc', 'montant');
+    const montantHtStr = pick(row, 'montant (ht)', 'montant ht', 'montant_ht', 'ht');
+    const montantStr = montantTtcStr || montantHtStr;
+    const montantEstHt = !montantTtcStr && !!montantHtStr;
     const tauxTvaStr = pick(row, 'taux tva', 'taux_tva', 'tva');
     const modeStr = pick(row, 'mode', 'mode paiement', 'mode_paiement').toUpperCase();
 
@@ -588,6 +596,23 @@ router.post('/companies/:companyId/import/factures', require('multer')({ storage
       const t = Number(String(tauxTvaStr).replace('%', '').replace(',', '.'));
       tauxTva = hadPercentSign || t > 1 ? round2(t) : round2(t * 100);
     }
+    const montantMode = montantEstHt ? 'ht' : 'ttc';
+    // Montant TTC réel de la facture, quel que soit la colonne d'origine —
+    // c'est ce montant (et non le montant brut de la colonne, qui peut être
+    // du HT) qui doit être réglé pour que le paiement importé solde
+    // exactement la facture (voir montant_paye ci-dessous). Même séquence
+    // d'arrondi que createFactureRecord (HT arrondi, TVA arrondie à part,
+    // puis TTC = HT + TVA arrondi) pour être certain que ce montant tombe
+    // exactement sur le TTC recalculé côté création — un écart, même d'un
+    // centime, empêcherait le lettrage automatique du règlement espèces.
+    let montantTtc;
+    if (montantEstHt) {
+      const htArrondi = round2(montant);
+      const tvaArrondie = round2((htArrondi * tauxTva) / 100);
+      montantTtc = round2(htArrondi + tvaArrondie);
+    } else {
+      montantTtc = round2(montant);
+    }
     const modePaiement = resoudreMode(modeStr);
     const compteTresorNumero = compteTresorPourMode(modePaiement);
 
@@ -598,7 +623,7 @@ router.post('/companies/:companyId/import/factures', require('multer')({ storage
         numero_piece: facture_numero || undefined,
         libelle: `FA N°: ${facture_numero || '—'} - ${clientNom}`,
         compte_numero: compte_numero || undefined,
-        montant, montant_mode: 'ttc',
+        montant, montant_mode: montantMode,
         appliquer_tva: tauxTva > 0, taux_tva: tauxTva,
       };
       if (modePaiement) {
@@ -608,7 +633,7 @@ router.post('/companies/:companyId/import/factures', require('multer')({ storage
             erreur: `Mode de paiement "${modeStr}" détecté mais aucun compte de trésorerie (${/esp[eè]ce/i.test(modePaiement) ? 'caisse 516x' : 'banque 514x'}) n'existe dans le plan comptable — la facture est créée mais SANS le règlement. Créez le compte puis saisissez le paiement manuellement.`,
           });
         } else {
-          payload.paiement = { date_paiement: dateStr, montant_paye: montant, mode: modePaiement, compte_tresor_numero: compteTresorNumero };
+          payload.paiement = { date_paiement: dateStr, montant_paye: montantTtc, mode: modePaiement, compte_tresor_numero: compteTresorNumero };
         }
       }
       createFactureRecord(companyId, req.user.id, payload);
