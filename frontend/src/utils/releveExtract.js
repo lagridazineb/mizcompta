@@ -1,7 +1,19 @@
 import { createWorker } from 'tesseract.js';
 import { loadPdf, extractPdfPagePositioned, renderPageToCanvas, fileToCanvas, preprocessCanvasForOcr, upscaleCanvasIfSmall } from './pdfExtract';
 
+// Extraction des opérations d'un relevé bancaire marocain (CIH, Attijari,
+// BMCE, Bank Of Africa, Banque Populaire, CFG, Saham…) à partir des lignes
+// positionnées d'un PDF texte (voir extractPdfPagePositioned dans
+// pdfExtract.js). Le repère clé : une même ligne ne contient JAMAIS deux
+// montants (une opération est soit un débit, soit un crédit) — on utilise
+// donc la position x du montant pour savoir dans quelle colonne il tombe.
 
+// Un OCR même de bonne qualité confond régulièrement certaines lettres et
+// chiffres qui se ressemblent (O/0, G/6, S/5, B/8, I·l/1, Z/2) — surtout
+// sur un scan de qualité moyenne. On ne corrige cette confusion que dans
+// les jetons COURTS et MAJORITAIREMENT numériques (donc très probablement
+// une date ou un montant mal lus), jamais dans un mot ordinaire, pour ne
+// pas corrompre les libellés.
 const CONFUSIONS_OCR = { O: '0', o: '0', I: '1', l: '1', S: '5', s: '5', B: '8', G: '6', g: '6', Z: '2', z: '2' };
 function normaliserJetonNumerique(token) {
   if (!token || token.length > 8) return token;
@@ -11,8 +23,17 @@ function normaliserJetonNumerique(token) {
   return car.map((c) => CONFUSIONS_OCR[c] || c).join('');
 }
 
+// Montant : accepte indifféremment le format marocain/français ("20 000,00"
+// ou "20.000,00", séparateur de milliers espace/point, décimales avec
+// virgule) ET le format anglo-saxon utilisé par certaines banques comme CFG
+// ("1,330.15", virgule pour les milliers, point pour les décimales) — les
+// deux se distinguent uniquement au moment de la conversion (toNumber), pas
+// à la détection, donc on accepte virgule ET point comme séparateur.
 const MONTANT_RE = /^\d{1,3}(?:[\s.,\u00A0]\d{3})*[.,]\d{2}$/;
-
+// Repli tolérant : la même chose mais en autorisant un caractère parasite
+// isolé (une marque de scan mal filtrée) avant ou après le nombre lui-même
+// — utilisé cellule par cellule pour ne pas perdre une ligne entière à
+// cause d'un seul caractère de bruit collé au montant par l'OCR.
 const MONTANT_TOLERANT_RE = /^.{0,2}?(\d{1,3}(?:[\s.,\u00A0]\d{3})*[.,]\d{2}).{0,2}$/;
 
 function montantDeCellule(text) {
