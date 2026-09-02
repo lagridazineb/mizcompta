@@ -227,7 +227,13 @@ function httpError(status, message) {
   return Object.assign(new Error(message), { status });
 }
 
-function createFactureRecord(companyId, userId, payload) {
+// Cœur de la création d'une facture (validations + écritures) SANS sa
+// propre transaction — extrait de createFactureRecord (ci-dessous) pour
+// pouvoir être appelé plusieurs fois de suite à l'intérieur d'UNE SEULE
+// transaction lors d'un import en masse (voir /import/factures plus bas).
+// Retourne juste l'id de l'écriture créée ; createFactureRecord se charge
+// d'ouvrir la transaction, de committer, et de relire l'écriture complète.
+function createFactureRecordCore(companyId, userId, payload) {
   const {
     type, tiers_id, fiscal_year_id, date_facture, numero_piece, libelle,
     compte_numero, montant, montant_mode, appliquer_tva, taux_tva, immo,
@@ -324,9 +330,8 @@ function createFactureRecord(companyId, userId, payload) {
     }
   }
 
-  const tx = db.transaction(() => {
-    // --- 1) Écriture de la facture (journal AC ou VE) ---
-    const infoFacture = db
+  // --- 1) Écriture de la facture (journal AC ou VE) ---
+  const infoFacture = db
       .prepare(
         `INSERT INTO journal_entries (company_id, journal_id, fiscal_year_id, numero_piece, date_ecriture, libelle, echeance, type_piece, created_by)
          VALUES (?, ?, ?, ?, ?, ?, ?, 'facture', ?)`
@@ -419,10 +424,20 @@ function createFactureRecord(companyId, userId, payload) {
       }
     }
 
-    return { entryId, paiementEntryId };
-  });
+  return entryId;
+}
 
-  const { entryId } = tx();
+// Création d'une facture isolée (route POST unitaire ci-dessous) : ouvre la
+// transaction autour de createFactureRecordCore, committe (ce qui déclenche
+// UN SEUL sync Turso), puis relit l'écriture complète avec ses lignes.
+// L'import en masse (voir /import/factures) n'utilise PAS cette fonction :
+// il appelle createFactureRecordCore directement, à l'intérieur de SA
+// PROPRE transaction unique couvrant tout le fichier — sans quoi chaque
+// ligne importée déclencherait son propre aller-retour réseau vers Turso,
+// ce qui rendait l'import d'un fichier de plus d'une centaine de lignes
+// extrêmement lent (plusieurs minutes, voire un blocage apparent).
+function createFactureRecord(companyId, userId, payload) {
+  const entryId = db.transaction(() => createFactureRecordCore(companyId, userId, payload))();
   const entry = db.prepare('SELECT * FROM journal_entries WHERE id = ?').get(entryId);
   entry.lignes = lignesAvecComptes(entryId);
   return entry;
@@ -551,9 +566,15 @@ router.post('/companies/:companyId/import/factures', require('multer')({ storage
     if (tiersCache.has(key)) return tiersCache.get(key);
     let tiersRow = db.prepare('SELECT * FROM tiers WHERE company_id = ? AND type = ? AND LOWER(nom) = ?').get(companyId, type === 'vente' ? 'client' : 'fournisseur', key);
     if (!tiersRow) {
+      // createTiersRecord n'ouvre pas sa propre transaction (voir sa doc) —
+      // il est fait pour être appelé depuis une transaction englobante, ce
+      // qui est justement le cas ici : tout l'import tourne dans UNE seule
+      // transaction (runImport, plus bas). L'appeler via un db.transaction()
+      // séparé ici lèverait "cannot start a transaction within a
+      // transaction" dès qu'un nouveau tiers doit être créé pendant
+      // l'import.
       const { createTiersRecord } = require('../services/tiersService');
-      const tx = db.transaction(() => createTiersRecord(companyId, { type: type === 'vente' ? 'client' : 'fournisseur', nom, ice: ice || '' }));
-      const newId = tx(); // createTiersRecord ne renvoie que l'id créé, pas la fiche complète
+      const newId = createTiersRecord(companyId, { type: type === 'vente' ? 'client' : 'fournisseur', nom, ice: ice || '' });
       tiersRow = db.prepare('SELECT * FROM tiers WHERE id = ?').get(newId);
     }
     tiersCache.set(key, tiersRow);
@@ -561,87 +582,99 @@ router.post('/companies/:companyId/import/factures', require('multer')({ storage
   }
 
   const results = { factures_creees: 0, erreurs: [] };
-  rows.forEach((row, idx) => {
-    const dateStr = excelDateToISO(pick(row, 'date'));
-    const facture_numero = pick(row, 'facture n°', 'facture n', 'facture', 'numero_piece', 'numero');
-    const clientNom = pick(row, 'client', 'fournisseur', 'nom');
-    const ice = pick(row, 'ice');
-    // Montant : on préfère une colonne TTC explicite ("Montant (TTC)",
-    // "Montant ttc", "TTC"…), et on ne retombe sur le HT que si aucune
-    // colonne TTC n'est présente — les libellés de colonnes varient d'un
-    // fichier à l'autre (parenthèses ou non, avec ou sans espace…), d'où la
-    // liste de variantes ci-dessous plutôt qu'un seul nom de colonne exact.
-    const montantTtcStr = pick(row, 'montant (ttc)', 'montant ttc', 'montant_ttc', 'ttc', 'montant');
-    const montantHtStr = pick(row, 'montant (ht)', 'montant ht', 'montant_ht', 'ht');
-    const montantStr = montantTtcStr || montantHtStr;
-    const montantEstHt = !montantTtcStr && !!montantHtStr;
-    const tauxTvaStr = pick(row, 'taux tva', 'taux_tva', 'tva');
-    const modeStr = pick(row, 'mode', 'mode paiement', 'mode_paiement').toUpperCase();
+  // IMPORTANT (performance) : UNE seule transaction pour tout le fichier —
+  // et donc UN SEUL sync Turso à la fin — au lieu d'appeler
+  // createFactureRecord (qui ouvre/committe SA PROPRE transaction, avec son
+  // propre aller-retour réseau) une fois par ligne. Sur un fichier de
+  // seulement une centaine de lignes, ce dernier faisait autant d'allers-
+  // retours vers la base distante, ce qui pouvait prendre plusieurs minutes,
+  // voire donner l'impression d'un blocage. Une erreur sur une ligne est
+  // toujours interceptée ici (elle ne fait donc PAS échouer/annuler les
+  // lignes déjà traitées dans la même transaction).
+  const runImport = db.transaction(() => {
+    rows.forEach((row, idx) => {
+      const dateStr = excelDateToISO(pick(row, 'date'));
+      const facture_numero = pick(row, 'facture n°', 'facture n', 'facture', 'numero_piece', 'numero');
+      const clientNom = pick(row, 'client', 'fournisseur', 'nom');
+      const ice = pick(row, 'ice');
+      // Montant : on préfère une colonne TTC explicite ("Montant (TTC)",
+      // "Montant ttc", "TTC"…), et on ne retombe sur le HT que si aucune
+      // colonne TTC n'est présente — les libellés de colonnes varient d'un
+      // fichier à l'autre (parenthèses ou non, avec ou sans espace…), d'où la
+      // liste de variantes ci-dessous plutôt qu'un seul nom de colonne exact.
+      const montantTtcStr = pick(row, 'montant (ttc)', 'montant ttc', 'montant_ttc', 'ttc', 'montant');
+      const montantHtStr = pick(row, 'montant (ht)', 'montant ht', 'montant_ht', 'ht');
+      const montantStr = montantTtcStr || montantHtStr;
+      const montantEstHt = !montantTtcStr && !!montantHtStr;
+      const tauxTvaStr = pick(row, 'taux tva', 'taux_tva', 'tva');
+      const modeStr = pick(row, 'mode', 'mode paiement', 'mode_paiement').toUpperCase();
 
-    if (!dateStr || !clientNom || !montantStr) {
-      results.erreurs.push({ ligne: idx + 2, erreur: 'Date, Client et Montant sont requis — ligne ignorée.' });
-      return;
-    }
-    const montant = parseMontantImport(montantStr);
-    if (!montant || Number.isNaN(montant)) {
-      results.erreurs.push({ ligne: idx + 2, erreur: `Montant "${montantStr}" invalide — ligne ignorée.` });
-      return;
-    }
-    // Le taux TVA peut être écrit en fraction (0.1 = 10%), en pourcentage
-    // déjà en base 100 (10), ou formaté avec un signe pourcentage ("10%")
-    // selon la mise en forme de la cellule Excel d'origine.
-    let tauxTva = 0;
-    if (tauxTvaStr) {
-      const hadPercentSign = /%/.test(tauxTvaStr);
-      const t = Number(String(tauxTvaStr).replace('%', '').replace(',', '.'));
-      tauxTva = hadPercentSign || t > 1 ? round2(t) : round2(t * 100);
-    }
-    const montantMode = montantEstHt ? 'ht' : 'ttc';
-    // Montant TTC réel de la facture, quel que soit la colonne d'origine —
-    // c'est ce montant (et non le montant brut de la colonne, qui peut être
-    // du HT) qui doit être réglé pour que le paiement importé solde
-    // exactement la facture (voir montant_paye ci-dessous). Même séquence
-    // d'arrondi que createFactureRecord (HT arrondi, TVA arrondie à part,
-    // puis TTC = HT + TVA arrondi) pour être certain que ce montant tombe
-    // exactement sur le TTC recalculé côté création — un écart, même d'un
-    // centime, empêcherait le lettrage automatique du règlement espèces.
-    let montantTtc;
-    if (montantEstHt) {
-      const htArrondi = round2(montant);
-      const tvaArrondie = round2((htArrondi * tauxTva) / 100);
-      montantTtc = round2(htArrondi + tvaArrondie);
-    } else {
-      montantTtc = round2(montant);
-    }
-    const modePaiement = resoudreMode(modeStr);
-    const compteTresorNumero = compteTresorPourMode(modePaiement);
-
-    try {
-      const tiersRow = findOrCreateTiers(clientNom, ice);
-      const payload = {
-        type, tiers_id: tiersRow.id, fiscal_year_id, date_facture: dateStr,
-        numero_piece: facture_numero || undefined,
-        libelle: `FA N°: ${facture_numero || '—'} - ${clientNom}`,
-        compte_numero: compte_numero || undefined,
-        montant, montant_mode: montantMode,
-        appliquer_tva: tauxTva > 0, taux_tva: tauxTva,
-      };
-      if (modePaiement) {
-        if (!compteTresorNumero) {
-          results.erreurs.push({
-            ligne: idx + 2,
-            erreur: `Mode de paiement "${modeStr}" détecté mais aucun compte de trésorerie (${/esp[eè]ce/i.test(modePaiement) ? 'caisse 516x' : 'banque 514x'}) n'existe dans le plan comptable — la facture est créée mais SANS le règlement. Créez le compte puis saisissez le paiement manuellement.`,
-          });
-        } else {
-          payload.paiement = { date_paiement: dateStr, montant_paye: montantTtc, mode: modePaiement, compte_tresor_numero: compteTresorNumero };
-        }
+      if (!dateStr || !clientNom || !montantStr) {
+        results.erreurs.push({ ligne: idx + 2, erreur: 'Date, Client et Montant sont requis — ligne ignorée.' });
+        return;
       }
-      createFactureRecord(companyId, req.user.id, payload);
-      results.factures_creees += 1;
-    } catch (e) {
-      results.erreurs.push({ ligne: idx + 2, erreur: e.message });
-    }
+      const montant = parseMontantImport(montantStr);
+      if (!montant || Number.isNaN(montant)) {
+        results.erreurs.push({ ligne: idx + 2, erreur: `Montant "${montantStr}" invalide — ligne ignorée.` });
+        return;
+      }
+      // Le taux TVA peut être écrit en fraction (0.1 = 10%), en pourcentage
+      // déjà en base 100 (10), ou formaté avec un signe pourcentage ("10%")
+      // selon la mise en forme de la cellule Excel d'origine.
+      let tauxTva = 0;
+      if (tauxTvaStr) {
+        const hadPercentSign = /%/.test(tauxTvaStr);
+        const t = Number(String(tauxTvaStr).replace('%', '').replace(',', '.'));
+        tauxTva = hadPercentSign || t > 1 ? round2(t) : round2(t * 100);
+      }
+      const montantMode = montantEstHt ? 'ht' : 'ttc';
+      // Montant TTC réel de la facture, quel que soit la colonne d'origine —
+      // c'est ce montant (et non le montant brut de la colonne, qui peut être
+      // du HT) qui doit être réglé pour que le paiement importé solde
+      // exactement la facture (voir montant_paye ci-dessous). Même séquence
+      // d'arrondi que createFactureRecordCore (HT arrondi, TVA arrondie à
+      // part, puis TTC = HT + TVA arrondi) pour être certain que ce montant
+      // tombe exactement sur le TTC recalculé côté création — un écart, même
+      // d'un centime, empêcherait le lettrage automatique du règlement.
+      let montantTtc;
+      if (montantEstHt) {
+        const htArrondi = round2(montant);
+        const tvaArrondie = round2((htArrondi * tauxTva) / 100);
+        montantTtc = round2(htArrondi + tvaArrondie);
+      } else {
+        montantTtc = round2(montant);
+      }
+      const modePaiement = resoudreMode(modeStr);
+      const compteTresorNumero = compteTresorPourMode(modePaiement);
+
+      try {
+        const tiersRow = findOrCreateTiers(clientNom, ice);
+        const payload = {
+          type, tiers_id: tiersRow.id, fiscal_year_id, date_facture: dateStr,
+          numero_piece: facture_numero || undefined,
+          libelle: `FA N°: ${facture_numero || '—'} - ${clientNom}`,
+          compte_numero: compte_numero || undefined,
+          montant, montant_mode: montantMode,
+          appliquer_tva: tauxTva > 0, taux_tva: tauxTva,
+        };
+        if (modePaiement) {
+          if (!compteTresorNumero) {
+            results.erreurs.push({
+              ligne: idx + 2,
+              erreur: `Mode de paiement "${modeStr}" détecté mais aucun compte de trésorerie (${/esp[eè]ce/i.test(modePaiement) ? 'caisse 516x' : 'banque 514x'}) n'existe dans le plan comptable — la facture est créée mais SANS le règlement. Créez le compte puis saisissez le paiement manuellement.`,
+            });
+          } else {
+            payload.paiement = { date_paiement: dateStr, montant_paye: montantTtc, mode: modePaiement, compte_tresor_numero: compteTresorNumero };
+          }
+        }
+        createFactureRecordCore(companyId, req.user.id, payload);
+        results.factures_creees += 1;
+      } catch (e) {
+        results.erreurs.push({ ligne: idx + 2, erreur: e.message });
+      }
+    });
   });
+  runImport();
 
   res.json(results);
 });
