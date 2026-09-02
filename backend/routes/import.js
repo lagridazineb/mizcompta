@@ -308,8 +308,6 @@ router.post('/companies/:companyId/import/ecritures', upload.single('file'), (re
       }));
       results.ecritures_creees += 1;
 
-      // Lettrage automatique des lignes tiers de cette écriture si elle
-      // comporte un règlement en espèces (voir lettrerSiRegleEnEspeces).
       for (const l of insertedLignes) {
         if (l.tiers) lettrerSiRegleEnEspeces(entryId, l.lineId, l.account_id, l.tiers, l.debit, l.credit);
       }
