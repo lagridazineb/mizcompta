@@ -3,10 +3,52 @@
 // d'environnement VITE_API_URL (définie au moment du build) pour pointer vers
 // l'API. En local, elle est absente et on garde '/api', que le proxy Vite
 // (vite.config.js) redirige vers http://localhost:4000.
-const BASE = import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api';
+let apiUrl = import.meta.env.VITE_API_URL || '';
+// Filet de sécurité "contenu mixte" : si le frontend est servi en HTTPS (cas de
+// tout déploiement Render) mais que VITE_API_URL a été saisie en http:// par
+// erreur, le navigateur bloque silencieusement la requête (aucune erreur nette,
+// juste une requête qui ne part jamais) — d'où un bouton "Veuillez patienter…"
+// bloqué indéfiniment sans aucun message. On corrige automatiquement le
+// protocole dans ce cas précis plutôt que de laisser l'utilisateur deviner.
+if (apiUrl.startsWith('http://') && typeof window !== 'undefined' && window.location.protocol === 'https:') {
+  apiUrl = apiUrl.replace('http://', 'https://');
+}
+const BASE = apiUrl ? `${apiUrl}/api` : '/api';
 
 function getToken() {
   return localStorage.getItem('mc_token');
+}
+
+function getApiBase() {
+  return BASE;
+}
+
+// Délai maximal avant d'abandonner une requête. Volontairement généreux
+// (45s) car les services gratuits (ex. Render free tier) peuvent mettre
+// jusqu'à ~50s à "se réveiller" après une période d'inactivité — on ne veut
+// pas afficher une fausse erreur pendant ce démarrage à froid. Au-delà, on
+// affiche un message clair plutôt que de laisser le bouton "Veuillez
+// patienter…" tourner indéfiniment sans aucun retour à l'utilisateur.
+const REQUEST_TIMEOUT_MS = 45000;
+
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error(
+        "Le serveur ne répond pas (délai dépassé). S'il vient d'être inactif, il peut mettre jusqu'à une minute à redémarrer : réessayez dans quelques instants. Si le problème persiste, vérifiez que le backend est bien démarré et accessible."
+      );
+    }
+    // Erreur réseau générique (DNS invalide, backend injoignable, CORS bloqué,
+    // pas de connexion internet…) : fetch() rejette avec un message technique
+    // peu clair pour l'utilisateur final ("Failed to fetch").
+    throw new Error("Impossible de joindre le serveur. Vérifiez votre connexion et que l'adresse de l'API est correcte.");
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Télécharge un fichier binaire (PDF/Excel/Word) protégé par le jeton
@@ -14,7 +56,7 @@ function getToken() {
 // jeton est envoyé en en-tête Authorization, pas en cookie.
 async function downloadFile(path, fallbackFilename) {
   const token = getToken();
-  const res = await fetch(`${BASE}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  const res = await fetchWithTimeout(`${BASE}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || `Échec du téléchargement (${res.status})`);
@@ -39,7 +81,7 @@ async function request(path, { method = 'GET', body, auth = true } = {}) {
     const token = getToken();
     if (token) headers.Authorization = `Bearer ${token}`;
   }
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetchWithTimeout(`${BASE}${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
@@ -246,4 +288,4 @@ export const api = {
   },
 };
 
-export { getToken };
+export { getToken, getApiBase };
