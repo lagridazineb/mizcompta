@@ -372,7 +372,18 @@ function FacturesContent() {
             </div>
             <div className="field">
               <label>Date</label>
-              <DateInputFR required value={form.date_facture} onChange={(e) => updateForm({ date_facture: e.target.value })} />
+              <DateInputFR
+                required
+                value={form.date_facture}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  // La date de la facture (saisie ici, en haut) est la référence :
+                  // elle se répercute automatiquement sur la date de paiement de la
+                  // section "Saisir le Paiement" ci-dessous, jamais l'inverse.
+                  updateForm({ date_facture: value });
+                  if (form.saisir_paiement) updatePaiement({ date_paiement: value });
+                }}
+              />
             </div>
           </div>
           <div className="field">
@@ -536,15 +547,13 @@ function FacturesContent() {
                   // directement le compte 5161 (Caisse) plutôt qu'un compte 516x
                   // quelconque.
                   const compteAuto = checked && !form.paiement.compte_tresor_numero ? findCaisseAccount(tresorerieAccounts) : null;
-                  // Réglé en espèces dès la coche : la date de facturation suit
-                  // automatiquement la date de paiement (modifiable ensuite si
-                  // l'utilisateur change la date de paiement).
-                  const modeEspeceParDefaut = /esp[eè]ce/i.test(form.paiement.mode || '');
                   updateForm({
                     saisir_paiement: checked,
-                    date_facture: checked && modeEspeceParDefaut ? form.paiement.date_paiement : form.date_facture,
                     paiement: {
                       ...form.paiement,
+                      // La date de paiement suit la date de la facture (saisie en
+                      // haut du formulaire), jamais l'inverse.
+                      date_paiement: checked ? form.date_facture : form.paiement.date_paiement,
                       montant_paye: checked ? ttc.toFixed(2) : form.paiement.montant_paye,
                       compte_tresor_numero: compteAuto ? compteAuto.numero : form.paiement.compte_tresor_numero,
                     },
@@ -560,15 +569,7 @@ function FacturesContent() {
                     <label>Date Paiement</label>
                     <DateInputFR
                       value={form.paiement.date_paiement}
-                      onChange={(e) => {
-                        const value = e.target.value;
-                        updatePaiement({ date_paiement: value });
-                        // Paiement en espèces : la date de facturation suit
-                        // automatiquement la date de paiement.
-                        if (/esp[eè]ce/i.test(form.paiement.mode || '')) {
-                          updateForm({ date_facture: value });
-                        }
-                      }}
+                      onChange={(e) => updatePaiement({ date_paiement: e.target.value })}
                     />
                   </div>
                   <div className="field">
@@ -591,11 +592,6 @@ function FacturesContent() {
                           ? findCaisseAccount(tresorerieAccounts)
                           : tresorerieAccounts.find((a) => a.numero.startsWith(modeInfo?.prefixeCompte || '514'));
                         updatePaiement({ mode: value, compte_tresor_numero: compteAuto ? compteAuto.numero : form.paiement.compte_tresor_numero });
-                        // Réglé en espèces : la date de facturation s'aligne
-                        // immédiatement sur la date de paiement déjà saisie.
-                        if (isEspece) {
-                          updateForm({ date_facture: form.paiement.date_paiement });
-                        }
                       }}
                     >
                       {MODES_PAIEMENT.map((m) => (
