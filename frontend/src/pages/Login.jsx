@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Navigate, Link } from 'react-router-dom';
 import { useAuth } from '../AuthContext';
+import { getApiBase } from '../api/client';
 
 export default function Login() {
   const { user, login } = useAuth();
@@ -8,6 +9,17 @@ export default function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(() => localStorage.getItem('mc_session_expired') === '1');
+
+  // "Réveille" le backend dès l'affichage de la page, avant même que
+  // l'utilisateur ait fini de saisir ses identifiants. Sur les hébergements
+  // gratuits (ex. Render), un service inactif peut mettre jusqu'à ~50s à
+  // redémarrer : sans cet appel, ce délai s'ajoutait entièrement au moment
+  // du clic sur "Se connecter", donnant l'impression que l'appli est figée.
+  // Échec ignoré volontairement (pas d'affichage d'erreur) : ce n'est qu'un
+  // préchauffage, la vraie tentative de connexion gérera ses propres erreurs.
+  useEffect(() => {
+    fetch(`${getApiBase()}/health`).catch(() => {});
+  }, []);
 
   if (user) return <Navigate to="/" replace />;
 
