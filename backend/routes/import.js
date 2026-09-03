@@ -4,6 +4,7 @@ const XLSX = require('xlsx');
 const { db } = require('../config/db');
 const { requireAuth } = require('../config/auth');
 const { createTiersRecord } = require('../services/tiersService');
+const { generateLettrageCode } = require('../services/lettrageCode');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -212,10 +213,6 @@ router.post('/companies/:companyId/import/ecritures', upload.single('file'), (re
     `INSERT INTO journal_lines (entry_id, account_id, debit, credit, tiers) VALUES (?, ?, ?, ?, ?)`
   );
 
-  function generateLettrageCode() {
-    return 'L' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 36).toString(36).toUpperCase();
-  }
-
   // Une facture d'achat réglée en espèces est soldée dès l'instant du
   // règlement, exactement comme la saisie manuelle ou l'import "Factures"
   // le font déjà (voir createFactureRecord dans factures.js) : elle ne doit
@@ -308,6 +305,8 @@ router.post('/companies/:companyId/import/ecritures', upload.single('file'), (re
       }));
       results.ecritures_creees += 1;
 
+      // Lettrage automatique des lignes tiers de cette écriture si elle
+      // comporte un règlement en espèces (voir lettrerSiRegleEnEspeces).
       for (const l of insertedLignes) {
         if (l.tiers) lettrerSiRegleEnEspeces(entryId, l.lineId, l.account_id, l.tiers, l.debit, l.credit);
       }
