@@ -1,14 +1,10 @@
 const express = require('express');
 const { db } = require('../config/db');
 const { requireAuth } = require('../config/auth');
+const { generateLettrageCode: generateCode } = require('../services/lettrageCode');
 
 const router = express.Router();
 router.use(requireAuth);
-
-function generateCode() {
-  // Code court, lisible, quasi-unique (lettres + horodatage compact)
-  return 'L' + Date.now().toString(36).toUpperCase();
-}
 
 // Mouvements non lettrés d'un compte (candidats au lettrage)
 router.get('/companies/:companyId/lettrage/compte/:accountId', (req, res) => {
