@@ -24,6 +24,7 @@ export default function Journaux() {
   const [neAffichePasIntitule, setNeAffichePasIntitule] = useState(false);
   const [entries, setEntries] = useState(null); // null = rien affiché encore
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const [vue, setVue] = useState('journal'); // 'journal' | 'centralisateur'
   const [centralisateur, setCentralisateur] = useState(null);
 
@@ -66,6 +67,7 @@ export default function Journaux() {
   async function afficher() {
     if (!activeCompany || codesCoches.length === 0) return;
     setLoading(true);
+    setError('');
     setVue('journal');
     try {
       const rows = await api.getEntries(activeCompany.id, {
@@ -77,6 +79,8 @@ export default function Journaux() {
       // l'ordre renvoyé par l'API (utilisé ailleurs dans l'ordre inverse).
       rows.sort((a, b) => (a.date_ecriture < b.date_ecriture ? -1 : a.date_ecriture > b.date_ecriture ? 1 : a.id - b.id));
       setEntries(rows);
+    } catch (err) {
+      setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -85,6 +89,7 @@ export default function Journaux() {
   async function afficherCentralisateur() {
     if (!activeCompany) return;
     setLoading(true);
+    setError('');
     setVue('centralisateur');
     try {
       const res = await api.getJournalCentralisateur(activeCompany.id, {
@@ -92,6 +97,8 @@ export default function Journaux() {
         date_fin: dateFin || undefined,
       });
       setCentralisateur(res);
+    } catch (err) {
+      setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -200,6 +207,7 @@ export default function Journaux() {
               État Journal Centralisateur
             </button>
           </div>
+          {error && <div className="alert alert-error" style={{ marginTop: 14 }}>{error}</div>}
         </div>
       </div>
 
