@@ -33,9 +33,7 @@ function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
 
-function generateLettrageCode() {
-  return 'L' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 36).toString(36).toUpperCase();
-}
+const { generateLettrageCode } = require('../services/lettrageCode');
 
 function getAccountByNumero(companyId, numero) {
   return db.prepare('SELECT * FROM accounts WHERE company_id = ? AND numero = ?').get(companyId, numero);
@@ -582,26 +580,78 @@ router.post('/companies/:companyId/import/factures', require('multer')({ storage
   }
 
   const results = { factures_creees: 0, erreurs: [] };
-  // IMPORTANT (performance) : UNE seule transaction pour tout le fichier —
-  // et donc UN SEUL sync Turso à la fin — au lieu d'appeler
-  // createFactureRecord (qui ouvre/committe SA PROPRE transaction, avec son
-  // propre aller-retour réseau) une fois par ligne. Sur un fichier de
-  // seulement une centaine de lignes, ce dernier faisait autant d'allers-
-  // retours vers la base distante, ce qui pouvait prendre plusieurs minutes,
-  // voire donner l'impression d'un blocage. Une erreur sur une ligne est
-  // toujours interceptée ici (elle ne fait donc PAS échouer/annuler les
-  // lignes déjà traitées dans la même transaction).
+  const cfg = CONFIG[type];
+
+  // ---------------------------------------------------------------------
+  // OPTIMISATION PERFORMANCE (import de gros fichiers, ex. 5000 lignes) :
+  // avant ce correctif, chaque ligne du fichier appelait createFactureRecordCore,
+  // qui exécute ~6 SELECT + 4 à 12 INSERT/UPDATE — soit jusqu'à ~18
+  // instructions SQL par ligne. Avec Turso (chaque instruction = un
+  // aller-retour réseau vers la base distante, même à l'intérieur d'une
+  // seule transaction), un fichier de 5000 lignes pouvait déclencher jusqu'à
+  // ~90 000 allers-retours réseau, soit plusieurs minutes — largement au-delà
+  // du délai que peut raisonnablement attendre un utilisateur devant un
+  // bouton "Import en cours…".
+  //
+  // Deux optimisations, sans changer le résultat comptable obtenu (mêmes
+  // écritures, mêmes montants, même lettrage) :
+  //
+  // 1) Les lectures qui ne varient PAS d'une ligne à l'autre dans un même
+  //    import (journal du type de facture, compte de contrepartie, compte de
+  //    trésorerie par mode de règlement, journal de règlement) sont résolues
+  //    UNE SEULE FOIS avant la boucle, ou mises en cache dès la première
+  //    rencontre (compte de TVA par taux : il n'y a jamais que 4-5 taux
+  //    distincts même sur 5000 lignes).
+  //
+  // 2) Les écritures elles-mêmes (journal_entries et journal_lines) ne sont
+  //    plus insérées une par une, mais accumulées en mémoire pendant la
+  //    boucle de validation, puis envoyées à la base en quelques dizaines de
+  //    requêtes groupées (db.insertMany, déjà utilisé ailleurs pour le même
+  //    motif — voir sa documentation dans config/db.js) une fois toutes les
+  //    lignes validées. Comme journal_entries.id est un AUTOINCREMENT, les id
+  //    sont réservés à l'avance (MAX(id)+1, incrémenté en mémoire) afin que
+  //    les lignes de chaque écriture puissent référencer le bon entry_id
+  //    sans attendre le retour individuel de chaque INSERT.
+  //
+  // Résultat : un import de 5000 lignes passe de plusieurs minutes à
+  // quelques secondes. Le comportement fonctionnel (une ligne en erreur ne
+  // bloque pas les autres, mêmes calculs de TVA/échéance/lettrage) est
+  // strictement identique à avant — seule la façon d'écrire en base change.
+  // ---------------------------------------------------------------------
+
+  // Résolutions fixes pour tout le fichier (mêmes pour les 5000 lignes) :
+  // faites une seule fois, avant la boucle, plutôt qu'à chaque ligne.
+  try {
+    assertExerciceOuvert(companyId, fiscal_year_id);
+  } catch (e) {
+    return res.status(e.status || 500).json({ error: e.message });
+  }
+  const journal = db.prepare('SELECT id FROM journals WHERE company_id = ? AND code = ?').get(companyId, cfg.journalCode);
+  if (!journal) return res.status(500).json({ error: `Journal ${cfg.journalCode} introuvable pour cette société.` });
+  const numeroCompteFixe = (compte_numero || '').trim() || cfg.contrepartieDefaut;
+  const contrepartie = getAccountByNumero(companyId, numeroCompteFixe);
+  if (!contrepartie) {
+    return res.status(422).json({ error: `Le compte ${numeroCompteFixe} n'existe pas dans le plan comptable de cette société. Créez-le d'abord (bouton "+ Compte").` });
+  }
+
+  // Caches à cardinalité réduite (quelques valeurs distinctes tout au plus,
+  // même sur des milliers de lignes) : remplis à la première rencontre.
+  const tvaAccountCache = new Map(); // taux -> compte TVA
+  const compteTresorCache = new Map(); // numéro -> ligne compte
+  const journalPaiementCache = new Map(); // code -> ligne journal
+
+  const entriesRows = []; // lignes prêtes pour db.insertMany sur journal_entries
+  const linesRows = []; // lignes prêtes pour db.insertMany sur journal_lines
+
   const runImport = db.transaction(() => {
+    const maxEntryId = (db.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM journal_entries').get() || { m: 0 }).m;
+    let nextEntryId = maxEntryId + 1;
+
     rows.forEach((row, idx) => {
       const dateStr = excelDateToISO(pick(row, 'date'));
       const facture_numero = pick(row, 'facture n°', 'facture n', 'facture', 'numero_piece', 'numero');
       const clientNom = pick(row, 'client', 'fournisseur', 'nom');
       const ice = pick(row, 'ice');
-      // Montant : on préfère une colonne TTC explicite ("Montant (TTC)",
-      // "Montant ttc", "TTC"…), et on ne retombe sur le HT que si aucune
-      // colonne TTC n'est présente — les libellés de colonnes varient d'un
-      // fichier à l'autre (parenthèses ou non, avec ou sans espace…), d'où la
-      // liste de variantes ci-dessous plutôt qu'un seul nom de colonne exact.
       const montantTtcStr = pick(row, 'montant (ttc)', 'montant ttc', 'montant_ttc', 'ttc', 'montant');
       const montantHtStr = pick(row, 'montant (ht)', 'montant ht', 'montant_ht', 'ht');
       const montantStr = montantTtcStr || montantHtStr;
@@ -613,66 +663,123 @@ router.post('/companies/:companyId/import/factures', require('multer')({ storage
         results.erreurs.push({ ligne: idx + 2, erreur: 'Date, Client et Montant sont requis — ligne ignorée.' });
         return;
       }
-      const montant = parseMontantImport(montantStr);
-      if (!montant || Number.isNaN(montant)) {
+      const montantSaisiBrut = parseMontantImport(montantStr);
+      if (!montantSaisiBrut || Number.isNaN(montantSaisiBrut)) {
         results.erreurs.push({ ligne: idx + 2, erreur: `Montant "${montantStr}" invalide — ligne ignorée.` });
         return;
       }
-      // Le taux TVA peut être écrit en fraction (0.1 = 10%), en pourcentage
-      // déjà en base 100 (10), ou formaté avec un signe pourcentage ("10%")
-      // selon la mise en forme de la cellule Excel d'origine.
       let tauxTva = 0;
       if (tauxTvaStr) {
         const hadPercentSign = /%/.test(tauxTvaStr);
         const t = Number(String(tauxTvaStr).replace('%', '').replace(',', '.'));
         tauxTva = hadPercentSign || t > 1 ? round2(t) : round2(t * 100);
       }
-      const montantMode = montantEstHt ? 'ht' : 'ttc';
-      // Montant TTC réel de la facture, quel que soit la colonne d'origine —
-      // c'est ce montant (et non le montant brut de la colonne, qui peut être
-      // du HT) qui doit être réglé pour que le paiement importé solde
-      // exactement la facture (voir montant_paye ci-dessous). Même séquence
-      // d'arrondi que createFactureRecordCore (HT arrondi, TVA arrondie à
-      // part, puis TTC = HT + TVA arrondi) pour être certain que ce montant
-      // tombe exactement sur le TTC recalculé côté création — un écart, même
-      // d'un centime, empêcherait le lettrage automatique du règlement.
-      let montantTtc;
-      if (montantEstHt) {
-        const htArrondi = round2(montant);
-        const tvaArrondie = round2((htArrondi * tauxTva) / 100);
-        montantTtc = round2(htArrondi + tvaArrondie);
-      } else {
-        montantTtc = round2(montant);
-      }
       const modePaiement = resoudreMode(modeStr);
-      const compteTresorNumero = compteTresorPourMode(modePaiement);
+      const libelle = `FA N°: ${facture_numero || '—'} - ${clientNom}`;
 
       try {
         const tiersRow = findOrCreateTiers(clientNom, ice);
-        const payload = {
-          type, tiers_id: tiersRow.id, fiscal_year_id, date_facture: dateStr,
-          numero_piece: facture_numero || undefined,
-          libelle: `FA N°: ${facture_numero || '—'} - ${clientNom}`,
-          compte_numero: compte_numero || undefined,
-          montant, montant_mode: montantMode,
-          appliquer_tva: tauxTva > 0, taux_tva: tauxTva,
-        };
+
+        // Calcul HT/TVA/TTC — EXACTEMENT la même séquence d'arrondi que
+        // createFactureRecordCore (voir sa doc), pour un résultat identique
+        // à ce que produisait l'ancien chemin ligne par ligne.
+        const montantSaisi = round2(montantSaisiBrut);
+        let ht, tva, ttc;
+        if (montantEstHt) {
+          ht = montantSaisi;
+          tva = round2((ht * tauxTva) / 100);
+          ttc = round2(ht + tva);
+        } else {
+          ttc = montantSaisi;
+          ht = round2(ttc / (1 + tauxTva / 100));
+          tva = round2(ttc - ht);
+        }
+
+        if (type === 'achat' && modePaiement && /esp[eè]ce/i.test(modePaiement) && ttc > PLAFOND_ESPECES_JOUR) {
+          throw new Error(`Le règlement en espèces d'une facture d'achat ne peut pas dépasser ${PLAFOND_ESPECES_JOUR.toFixed(2)} DH TTC (art. 106-II du CGI) — cette facture est de ${ttc.toFixed(2)} DH. Choisissez un autre mode de paiement (chèque, virement…) ou scindez le règlement.`);
+        }
+
+        let tvaAccount = null;
+        if (tva > 0) {
+          if (!tvaAccountCache.has(tauxTva)) {
+            const libelleBase = type === 'achat' ? 'Etat TVA récupérable sur charges' : 'Etat TVA facturée';
+            tvaAccountCache.set(tauxTva, getOrCreateTvaAccount(companyId, cfg.tvaRacineCharge, tauxTva, cfg.tvaNature, libelleBase));
+          }
+          tvaAccount = tvaAccountCache.get(tauxTva);
+        }
+
+        // Échéance : date_facture + 60 jours (l'import ne permet pas de
+        // saisir une échéance ligne par ligne, comme avant ce correctif).
+        const dEcheance = new Date(dateStr);
+        dEcheance.setDate(dEcheance.getDate() + 60);
+        const echeanceFinale = dEcheance.toISOString().slice(0, 10);
+
+        const entryId = nextEntryId++;
+        entriesRows.push([entryId, companyId, journal.id, fiscal_year_id, facture_numero || null, dateStr, libelle, echeanceFinale, 'facture', req.user.id, null]);
+
+        // Ligne tiers (débit pour une vente, crédit pour un achat)
+        const ligneTiersRow = [entryId, tiersRow.account_id, libelle, cfg.tiersDebit ? ttc : 0, cfg.tiersDebit ? 0 : ttc, null, tiersRow.nom, null, null, null];
+        linesRows.push(ligneTiersRow);
+        // Ligne TVA (avant la ligne charge/produit, comme dans createFactureRecordCore)
+        if (tva > 0) {
+          linesRows.push([entryId, tvaAccount.id, `TVA ${tauxTva}%`, cfg.tiersDebit ? 0 : tva, cfg.tiersDebit ? tva : 0, tauxTva, tiersRow.nom, null, null, null]);
+        }
+        // Ligne charge/produit, en HT
+        linesRows.push([entryId, contrepartie.id, libelle, cfg.tiersDebit ? 0 : ht, cfg.tiersDebit ? ht : 0, null, null, null, null, null]);
+
+        // Règlement immédiat si un mode de paiement est renseigné.
         if (modePaiement) {
+          const compteTresorNumero = compteTresorPourMode(modePaiement);
           if (!compteTresorNumero) {
             results.erreurs.push({
               ligne: idx + 2,
               erreur: `Mode de paiement "${modeStr}" détecté mais aucun compte de trésorerie (${/esp[eè]ce/i.test(modePaiement) ? 'caisse 516x' : 'banque 514x'}) n'existe dans le plan comptable — la facture est créée mais SANS le règlement. Créez le compte puis saisissez le paiement manuellement.`,
             });
           } else {
-            payload.paiement = { date_paiement: dateStr, montant_paye: montantTtc, mode: modePaiement, compte_tresor_numero: compteTresorNumero };
+            if (!compteTresorCache.has(compteTresorNumero)) {
+              compteTresorCache.set(compteTresorNumero, getAccountByNumero(companyId, compteTresorNumero));
+            }
+            const compteTresor = compteTresorCache.get(compteTresorNumero);
+            const codeJournalPaiement = journalForCompteTresor(compteTresorNumero);
+            if (!journalPaiementCache.has(codeJournalPaiement)) {
+              journalPaiementCache.set(codeJournalPaiement, db.prepare('SELECT id FROM journals WHERE company_id = ? AND code = ?').get(companyId, codeJournalPaiement));
+            }
+            const journalPaiement = journalPaiementCache.get(codeJournalPaiement);
+
+            if (compteTresor && journalPaiement) {
+              const montantPaye = ttc; // import : toujours un règlement intégral
+              const paiementEntryId = nextEntryId++;
+              const libellePaiement = `Règlement ${tiersRow.nom} - FA N°${facture_numero || ''}`.trim();
+              entriesRows.push([paiementEntryId, companyId, journalPaiement.id, fiscal_year_id, facture_numero || null, dateStr, libellePaiement, null, 'reglement', req.user.id, entryId]);
+
+              // Lettrage automatique (toujours vrai ici : montantPaye === ttc par construction)
+              const lettrageCode = Math.abs(montantPaye - ttc) < 0.01 ? generateLettrageCode() : null;
+              if (lettrageCode) ligneTiersRow[7] = lettrageCode; // rétro-lettrage de la ligne facture déjà poussée
+
+              linesRows.push([paiementEntryId, tiersRow.account_id, libelle, cfg.tiersDebit ? 0 : montantPaye, cfg.tiersDebit ? montantPaye : 0, null, tiersRow.nom, lettrageCode, modePaiement, null]);
+              linesRows.push([paiementEntryId, compteTresor.id, libelle, cfg.tiersDebit ? montantPaye : 0, cfg.tiersDebit ? 0 : montantPaye, null, null, null, modePaiement, null]);
+            }
           }
         }
-        createFactureRecordCore(companyId, req.user.id, payload);
+
         results.factures_creees += 1;
       } catch (e) {
         results.erreurs.push({ ligne: idx + 2, erreur: e.message });
       }
     });
+
+    if (entriesRows.length) {
+      db.insertMany(
+        'INSERT INTO journal_entries (id, company_id, journal_id, fiscal_year_id, numero_piece, date_ecriture, libelle, echeance, type_piece, created_by, facture_id)',
+        entriesRows
+      );
+    }
+    if (linesRows.length) {
+      db.insertMany(
+        'INSERT INTO journal_lines (entry_id, account_id, libelle, debit, credit, taux_tva, tiers, lettrage, mode_paiement, piece_reglement)',
+        linesRows
+      );
+    }
   });
   runImport();
 
