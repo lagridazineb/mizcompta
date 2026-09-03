@@ -16,6 +16,8 @@ export default function BalanceAgee() {
     try {
       const data = await api.getBalanceAgee(activeCompany.id, type);
       setRows(data);
+    } catch (err) {
+      console.error('Impossible de charger la balance âgée :', err.message);
     } finally {
       setLoading(false);
     }
