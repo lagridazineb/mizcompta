@@ -8,6 +8,7 @@ const express = require('express');
 const { db } = require('../config/db');
 const { requireAuth } = require('../config/auth');
 const { assertExerciceOuvert } = require('../services/clotureGuard');
+const { generateLettrageCode } = require('../services/lettrageCode');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -35,9 +36,6 @@ function getOrCreateCompteAttenteCheque(companyId) {
     account = { id: info.lastInsertRowid, numero, intitule: 'Chèques émis en circulation (non débités)', classe: 5, nature: 'actif' };
   }
   return account;
-}
-function generateLettrageCode() {
-  return 'L' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 36).toString(36).toUpperCase();
 }
 
 // Enregistre le paiement et, si des lignes de factures ouvertes sont
