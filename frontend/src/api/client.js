@@ -118,6 +118,55 @@ async function request(path, { method = 'GET', body, auth = true } = {}) {
   return data;
 }
 
+// Délai pour les envois de fichiers (import Excel/CSV, OCR) : plus long que
+// REQUEST_TIMEOUT_MS car un traitement serveur (parsing de centaines de
+// lignes, appel OCR externe) peut légitimement prendre plus de temps qu'un
+// simple GET/POST JSON — mais reste borné : avant ce correctif, ces trois
+// fonctions faisaient un fetch() sans AUCUN timeout, donc si le serveur
+// était lent à répondre (démarrage à froid, gros fichier), le bouton restait
+// bloqué sur "Import en cours…" indéfiniment, sans le moindre message.
+const UPLOAD_TIMEOUT_MS = 120000;
+
+async function uploadRequest(path, fields) {
+  const token = getToken();
+  const formData = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined && value !== null) formData.append(key, value);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: formData,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error(
+        "Le serveur met trop de temps à répondre. S'il vient d'être inactif, il peut mettre jusqu'à une minute à redémarrer : réessayez dans quelques instants. Si le fichier est volumineux, essayez de le scinder en plusieurs fichiers plus petits."
+      );
+    }
+    throw new Error("Impossible de joindre le serveur. Vérifiez votre connexion et que l'adresse de l'API est correcte.");
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const data = await res.json().catch(() => ({}));
+
+  if (res.status === 401) {
+    localStorage.removeItem('mc_token');
+    localStorage.removeItem('mc_user');
+    localStorage.setItem('mc_session_expired', '1');
+    window.dispatchEvent(new Event('mc:unauthorized'));
+  }
+
+  if (!res.ok) throw new Error(data.error || `Erreur ${res.status}`);
+  return data;
+}
+
 export const api = {
   login: (email, password) => request('/auth/login', { method: 'POST', body: { email, password }, auth: false }),
   register: (payload) => request('/auth/register', { method: 'POST', body: payload, auth: false }),
@@ -241,51 +290,18 @@ export const api = {
   getHistoriqueCnss: (companyId, params) => request(`/companies/${companyId}/paiements/cnss/historique?${new URLSearchParams(params).toString()}`),
 
   getImportModeleUrl: (companyId, kind) => `${BASE}/companies/${companyId}/import/modele/${kind}`,
-  importFile: async (companyId, kind, file) => {
-    const token = localStorage.getItem('mc_token');
-    const formData = new FormData();
-    formData.append('file', file);
-    const res = await fetch(`${BASE}/companies/${companyId}/import/${kind}`, {
-      method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-      body: formData,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `Erreur ${res.status}`);
-    return data;
-  },
-  importFactures: async (companyId, file, { type, fiscalYearId, compteNumero }) => {
-    const token = localStorage.getItem('mc_token');
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('type', type);
-    formData.append('fiscal_year_id', fiscalYearId);
-    if (compteNumero) formData.append('compte_numero', compteNumero);
-    const res = await fetch(`${BASE}/companies/${companyId}/import/factures`, {
-      method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-      body: formData,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `Erreur ${res.status}`);
-    return data;
-  },
+  importFile: (companyId, kind, file) => uploadRequest(`/companies/${companyId}/import/${kind}`, { file }),
+  importFactures: (companyId, file, { type, fiscalYearId, compteNumero }) =>
+    uploadRequest(`/companies/${companyId}/import/factures`, {
+      file,
+      type,
+      fiscal_year_id: fiscalYearId,
+      ...(compteNumero ? { compte_numero: compteNumero } : {}),
+    }),
 
   // Reconnaissance de tableau (OCR.space, côté serveur) pour le Convertisseur
   // PDF/Image -> Excel. Renvoie { pages: [texte de chaque page] }.
-  ocrTable: async (file) => {
-    const token = localStorage.getItem('mc_token');
-    const formData = new FormData();
-    formData.append('file', file);
-    const res = await fetch(`${BASE}/ocr/table`, {
-      method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-      body: formData,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `Erreur ${res.status}`);
-    return data;
-  },
+  ocrTable: (file) => uploadRequest('/ocr/table', { file }),
 };
 
 export { getToken, getApiBase };
