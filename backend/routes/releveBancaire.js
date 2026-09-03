@@ -4,6 +4,7 @@ const { requireAuth } = require('../config/auth');
 const { buildExport } = require('../services/exportService');
 const { assertExerciceOuvert } = require('../services/clotureGuard');
 const { classifierOperation } = require('../services/releveClassifier');
+const { generateLettrageCode } = require('../services/lettrageCode');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -66,10 +67,6 @@ function lignesAvecComptes(entryId) {
        WHERE jl.entry_id = ? ORDER BY jl.id`
     )
     .all(entryId);
-}
-
-function generateLettrageCode() {
-  return 'L' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 36).toString(36).toUpperCase();
 }
 
 // Liste des chèques encore "en attente" (reçus de clients ou émis à des fournisseurs,
