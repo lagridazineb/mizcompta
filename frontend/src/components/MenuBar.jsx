@@ -58,7 +58,7 @@ function buildMenus({ navigate, logout, closeCompany, hasCompany }) {
       label: 'Paramètres',
       items: [
         { label: 'Plan Comptable', to: '/plan-comptable' },
-        { label: 'Factures Clients', to: '/etats/ventes-client' },
+        { label: 'Etat des ventes par client', to: '/etats/ventes-client' },
         { label: 'Journaux', to: '/journaux' },
         { label: 'Banque', to: '/banque' },
         { label: 'Tiers (Client + Frs..)', to: '/tiers' },
@@ -72,7 +72,7 @@ function buildMenus({ navigate, logout, closeCompany, hasCompany }) {
       label: 'Etats',
       items: [
         { label: 'Bilan & CPC', to: '/etats' },
-        { label: ' Factures Clients', to: '/etats/ventes-client' },
+        { label: 'Etat des ventes par client', to: '/etats/ventes-client' },
         { label: 'Balance', to: '/balance' },
         { label: 'Grand livre', to: '/grand-livre' },
         { label: 'Balance âgée', to: '/balance-agee' },
