@@ -885,3 +885,35 @@ table.ledger tfoot td { font-weight: 700; border-top: 2px solid var(--ink-900); 
   padding: 2px 6px;
 }
 .mini-btn:hover { background: rgba(196,122,99,0.15); border-radius: 4px; }
+
+/* Etat des ventes par client (Art. 20/82 CGI) — en-tête façon modèle DGI */
+.evc-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  text-align: center;
+  border-bottom: 2px solid var(--border);
+  padding-bottom: 16px;
+  margin-bottom: 20px;
+}
+.evc-logo { width: 72px; height: 72px; object-fit: contain; flex-shrink: 0; }
+.evc-header-text { flex: 1; }
+.evc-header-ministere { font-size: 12px; color: var(--text-muted); }
+.evc-header-direction { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+.evc-header-text h1 { font-size: 20px; margin: 4px 0; }
+.evc-identite {
+  background: var(--ink-800);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+}
+.evc-identite h2 { font-size: 14px; margin: 0 0 8px; }
+.evc-identite-grid { display: flex; flex-wrap: wrap; gap: 24px; font-size: 13.5px; }
+.evc-table th, .evc-table td { padding: 8px 10px; }
+
+@media print {
+  .evc-header { border-bottom: 2px solid #000; }
+  .evc-logo { width: 60px; height: 60px; }
+}
