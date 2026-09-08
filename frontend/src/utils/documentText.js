@@ -72,8 +72,16 @@ export async function extractDocument(file, { onStatus, onProgress } = {}) {
       }
       onStatus?.(`Page ${pageNumber} scannée — reconnaissance OCR en cours…`);
       const worker = await getOcrWorker(onProgress);
-      const { data } = await worker.recognize(preprocessCanvasForOcr(canvas));
-      rows = rows.concat(textToRows(data.text));
+      // Voir le commentaire détaillé sur PSM_MULTI_PASS plus haut : un
+      // document structuré en plusieurs blocs encadrés (cartouches
+      // d'identification, tableau, cadre réservé à l'administration...)
+      // perd des blocs entiers de texte avec le mode d'analyse
+      // "entièrement automatique" par défaut. Ce document (registre de
+      // commerce, avis de patente, attestation CNSS, attestation fiscale...)
+      // a exactement cette structure, d'où l'utilisation du même double
+      // passage que pour les factures plutôt qu'un simple recognize().
+      const text = await recognizeMultiPass(worker, preprocessCanvasForOcr(canvas), PSM_MULTI_PASS);
+      rows = rows.concat(textToRows(text));
     }
     const text = rows.map((r) => r.join(' ')).join('\n');
     return { text, rows, pages: pdf.numPages };
@@ -84,9 +92,9 @@ export async function extractDocument(file, { onStatus, onProgress } = {}) {
   onStatus?.('Reconnaissance OCR en cours…');
   const worker = await getOcrWorker(onProgress);
   const imageCanvas = preprocessCanvasForOcr(upscaleCanvasIfSmall(await fileToCanvas(file)));
-  const { data } = await worker.recognize(imageCanvas);
-  const rows = textToRows(data.text);
-  return { text: data.text, rows, pages: 1 };
+  const text = await recognizeMultiPass(worker, imageCanvas, PSM_MULTI_PASS);
+  const rows = textToRows(text);
+  return { text, rows, pages: 1 };
 }
 
 // Variante "par page" utilisée pour le Scan de factures : quand un même PDF
