@@ -200,7 +200,7 @@ function FacturesContent() {
     }
     setLoading(true);
     try {
-      const entry = await api.createFacture(activeCompany.id, {
+      const payloadFacture = {
         type,
         tiers_id: Number(form.tiers_id),
         fiscal_year_id: activeFiscalYear.id,
@@ -225,7 +225,25 @@ function FacturesContent() {
               date_valeur: form.paiement.date_valeur,
             }
           : null,
-      });
+      };
+      let entry;
+      try {
+        entry = await api.createFacture(activeCompany.id, payloadFacture);
+      } catch (err) {
+        // Doublon détecté (même n° de facture pour le même tiers) : on
+        // demande confirmation plutôt que de bloquer ou de dupliquer
+        // silencieusement — même logique que pour le scan de factures.
+        if (err.status === 409 && err.data?.doublon) {
+          const confirmer = window.confirm(`${err.data.error}\n\nCliquez sur OK pour l'enregistrer quand même, ou Annuler pour ne pas la dupliquer.`);
+          if (!confirmer) {
+            setLoading(false);
+            return;
+          }
+          entry = await api.createFacture(activeCompany.id, { ...payloadFacture, force: true });
+        } else {
+          throw err;
+        }
+      }
       // Si on modifiait une facture existante, on ne supprime l'ancienne
       // qu'une fois la nouvelle bien enregistrée (pour ne rien perdre en cas d'erreur).
       if (editingId) {
