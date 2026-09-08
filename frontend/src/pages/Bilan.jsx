@@ -117,7 +117,50 @@ const COLONNES = {
     { key: 'stock_initial_net', label: 'Stock initial net' }, { key: 'stock_final_brut', label: 'Stock final brut' },
     { key: 'stock_final_provision', label: 'Provision finale' }, { key: 'stock_final_net', label: 'Stock final net' }, { key: 'variation', label: 'Variation' },
   ],
+  IS_ENCOURAGEES: [{ key: 'libelle', label: 'Libellé' }, { key: 'montant', label: 'Montant' }],
+  A1: [{ key: 'rubrique', label: 'Rubrique' }, { key: 'methode', label: "Méthode d'évaluation appliquée" }],
+  A2_DEVISES: [{ key: 'nature', label: 'Nature' }, { key: 'entree_contrevaleur', label: 'Entrée contre-valeur DH' }, { key: 'sortie_contrevaleur', label: 'Sortie contre-valeur DH' }],
+  A2_DEROGATIONS: [{ key: 'indication', label: 'Indication des dérogations' }, { key: 'justification', label: 'Justification' }, { key: 'influence', label: 'Influence sur patrimoine/situation/résultats' }],
+  A3: [{ key: 'nature_changement', label: 'Nature des changements' }, { key: 'justification', label: 'Justification' }, { key: 'influence', label: 'Influence sur patrimoine/situation/résultats' }],
 };
+
+// Lignes suggérées (rubriques officielles) pour préremplir les États A1/A2
+// devises la première fois, afin que l'utilisateur n'ait qu'à compléter la
+// colonne de droite plutôt que de deviner les intitulés réglementaires.
+const RUBRIQUES_A1 = [
+  'I. ACTIF IMMOBILISÉ — A. Évaluation à l\'entrée — 1. Immobilisations en non-valeur',
+  'I. ACTIF IMMOBILISÉ — A. Évaluation à l\'entrée — 2. Immobilisations incorporelles',
+  'I. ACTIF IMMOBILISÉ — A. Évaluation à l\'entrée — 3. Immobilisations corporelles',
+  'I. ACTIF IMMOBILISÉ — A. Évaluation à l\'entrée — 4. Immobilisations financières',
+  'I. ACTIF IMMOBILISÉ — B. Corrections de valeur — 1. Méthodes d\'amortissement',
+  'I. ACTIF IMMOBILISÉ — B. Corrections de valeur — 2. Méthodes d\'évaluation des provisions pour dépréciation',
+  'I. ACTIF IMMOBILISÉ — B. Corrections de valeur — 3. Méthodes de détermination des écarts de conversion actif',
+  'II. ACTIF CIRCULANT (hors trésorerie) — A. Évaluation à l\'entrée — 1. Stocks',
+  'II. ACTIF CIRCULANT (hors trésorerie) — A. Évaluation à l\'entrée — 2. Créances',
+  'II. ACTIF CIRCULANT (hors trésorerie) — A. Évaluation à l\'entrée — 3. Titres et valeurs de placement',
+  'II. ACTIF CIRCULANT (hors trésorerie) — B. Correction de valeur — 1. Méthodes d\'évaluation des provisions pour dépréciation',
+  'II. ACTIF CIRCULANT (hors trésorerie) — B. Correction de valeur — 2. Méthodes de détermination des écarts de conversion actif',
+  'III. FINANCEMENT PERMANENT — 1. Méthodes de réévaluation',
+  'III. FINANCEMENT PERMANENT — 2. Méthodes d\'évaluation des provisions réglementées',
+  'III. FINANCEMENT PERMANENT — 3. Dettes de financement permanent',
+  'III. FINANCEMENT PERMANENT — 4. Méthodes d\'évaluation des provisions durables pour risques et charges',
+  'III. FINANCEMENT PERMANENT — 5. Méthodes de détermination des écarts de conversion passif',
+  'IV. PASSIF CIRCULANT (hors trésorerie) — 1. Dettes du passif circulant',
+  'IV. PASSIF CIRCULANT (hors trésorerie) — 2. Méthodes d\'évaluation d\'autres provisions durables pour risques et charges',
+  'IV. PASSIF CIRCULANT (hors trésorerie) — 3. Méthodes de détermination des écarts de conversion passif',
+  'V. TRÉSORERIE — 1. Trésorerie - Actif',
+  'V. TRÉSORERIE — 2. Trésorerie - Passif',
+  'V. TRÉSORERIE — 3. Méthodes d\'évaluation des provisions pour dépréciation',
+];
+const RUBRIQUES_A2_DEVISES = [
+  'Financement permanent', 'Immobilisations brutes', 'Rentrées sur immobilisations',
+  'Remboursement des dettes de financement', 'Produits', 'Charges',
+];
+const RUBRIQUES_IS_ENCOURAGEES = [
+  'CA Taxable', 'CA exonéré à 100%', 'CA soumis au taux réduit',
+  "Autres produits d'exploitation", 'Produits financiers', 'Subventions',
+  'Dénominateur (somme des lignes ci-dessus)', "Montant de l'impôt sur les sociétés",
+];
 
 const TABLEAUX = [
   { key: 'garde', label: 'Page de garde (déclaration fiscale)' },
@@ -142,6 +185,11 @@ const TABLEAUX = [
   { key: 'T19', label: 'T19 — Locations et baux (hors crédit-bail)' },
   { key: 'T20', label: 'T20 — État détaillé des stocks' },
   { key: 'financement', label: 'Tableau de financement — synthèse des masses' },
+  { key: 'IS_ENCOURAGEES', label: "État pour le calcul de l'IS — entreprises encouragées" },
+  { key: 'A1', label: 'État A1 — Principales méthodes d\'évaluation' },
+  { key: 'A2_DEVISES', label: 'État A2 — Opérations en devises' },
+  { key: 'A2_DEROGATIONS', label: 'État A2 — Dérogations' },
+  { key: 'A3', label: 'État A3 — Changements de méthodes' },
 ];
 
 export default function Bilan() {
@@ -205,6 +253,14 @@ export default function Bilan() {
     return lignes;
   }, [immobilisations, anneeExercice]);
   const t16Lignes = annexes?.T16 && annexes.T16.length > 0 ? annexes.T16 : t16Auto;
+
+  // Pour A1 / A2 devises / IS entreprises encouragées : on préremplit les
+  // intitulés réglementaires (rubriques fixes) la première fois, pour que
+  // l'utilisateur n'ait qu'à compléter la colonne de droite plutôt que de
+  // deviner les libellés officiels — même logique que pour T16 ci-dessus.
+  const a1Lignes = annexes?.A1 && annexes.A1.length > 0 ? annexes.A1 : RUBRIQUES_A1.map((rubrique) => ({ rubrique, methode: '' }));
+  const a2DevisesLignes = annexes?.A2_DEVISES && annexes.A2_DEVISES.length > 0 ? annexes.A2_DEVISES : RUBRIQUES_A2_DEVISES.map((nature) => ({ nature, entree_contrevaleur: '', sortie_contrevaleur: '' }));
+  const isEncourageesLignes = annexes?.IS_ENCOURAGEES && annexes.IS_ENCOURAGEES.length > 0 ? annexes.IS_ENCOURAGEES : RUBRIQUES_IS_ENCOURAGEES.map((libelle) => ({ libelle, montant: '' }));
 
   function toggleAll(value) {
     setSelection(Object.fromEntries(TABLEAUX.map((t) => [t.key, value])));
@@ -635,6 +691,46 @@ export default function Bilan() {
                   <Ligne2 label="Trésorerie nette (A - B)" montant={data.tableauFinancement.tresorerieNette} precedent={data.tableauFinancement.tresorerieNettePrec} bold />
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {selection.IS_ENCOURAGEES && (
+            <div className="page-break">
+              <p className="text-muted no-print" style={{ fontSize: 12.5 }}>
+                Ne concerne que les entreprises bénéficiant d'un régime fiscal encouragé (taux réduit, exonération...). Laissez à 0 si non concerné.
+              </p>
+              <AnnexeManuelle company={data.company} title="ETAT POUR LE CALCUL DE L'IMPOT SUR LES SOCIETES — ENTREPRISES ENCOURAGEES" periodeDebut={periodeDebut} periodeFin={periodeFin}
+                columns={COLONNES.IS_ENCOURAGEES} lignes={isEncourageesLignes} onSave={(l) => saveAnnexe('IS_ENCOURAGEES', l)} saving={savingTableau === 'IS_ENCOURAGEES'} />
+            </div>
+          )}
+
+          {selection.A1 && (
+            <div className="page-break">
+              <AnnexeManuelle company={data.company} title="ETAT A1 — PRINCIPALES METHODES D'EVALUATION SPECIFIQUES A L'ENTREPRISE" periodeDebut={periodeDebut} periodeFin={periodeFin}
+                columns={COLONNES.A1} lignes={a1Lignes} onSave={(l) => saveAnnexe('A1', l)} saving={savingTableau === 'A1'} />
+            </div>
+          )}
+
+          {selection.A2_DEVISES && (
+            <div className="page-break">
+              <AnnexeManuelle company={data.company} title="ETAT A2 — TABLEAU DES OPERATIONS EN DEVISES COMPTABILISEES PENDANT L'EXERCICE" periodeDebut={periodeDebut} periodeFin={periodeFin}
+                columns={COLONNES.A2_DEVISES} lignes={a2DevisesLignes} onSave={(l) => saveAnnexe('A2_DEVISES', l)} saving={savingTableau === 'A2_DEVISES'} />
+            </div>
+          )}
+
+          {selection.A2_DEROGATIONS && (
+            <div className="page-break">
+              <p className="text-muted no-print" style={{ fontSize: 12.5 }}>Laissez vide si l'entreprise n'a demandé ou obtenu aucune dérogation aux principes comptables.</p>
+              <AnnexeManuelle company={data.company} title="ETAT A2 — ETAT DES DEROGATIONS" periodeDebut={periodeDebut} periodeFin={periodeFin}
+                columns={COLONNES.A2_DEROGATIONS} lignes={annexes?.A2_DEROGATIONS || []} onSave={(l) => saveAnnexe('A2_DEROGATIONS', l)} saving={savingTableau === 'A2_DEROGATIONS'} />
+            </div>
+          )}
+
+          {selection.A3 && (
+            <div className="page-break">
+              <p className="text-muted no-print" style={{ fontSize: 12.5 }}>Laissez vide si aucune méthode comptable n'a changé par rapport à l'exercice précédent.</p>
+              <AnnexeManuelle company={data.company} title="ETAT A3 — ETAT DES CHANGEMENTS DE METHODES" periodeDebut={periodeDebut} periodeFin={periodeFin}
+                columns={COLONNES.A3} lignes={annexes?.A3 || []} onSave={(l) => saveAnnexe('A3', l)} saving={savingTableau === 'A3'} />
             </div>
           )}
         </>
