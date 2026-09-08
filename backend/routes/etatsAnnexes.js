@@ -21,6 +21,11 @@ const TABLEAUX_MANUELS = {
   T18: ['raison_sociale', 'adresse', 'cin', 'montant_pret', 'date_pret', 'duree_mois', 'taux_interet', 'charge_financiere', 'remboursement_principal', 'remboursement_interet', 'observation'],
   T19: ['nature_bien', 'lieu', 'proprietaire', 'adresse_proprietaire', 'if_proprietaire', 'date_conclusion', 'montant_annuel', 'montant_charge_exercice', 'type_contrat', 'observation'],
   T20: ['libelle', 'stock_initial_brut', 'stock_initial_provision', 'stock_initial_net', 'stock_final_brut', 'stock_final_provision', 'stock_final_net', 'variation'],
+  IS_ENCOURAGEES: ['libelle', 'montant'],
+  A1: ['rubrique', 'methode'],
+  A2_DEVISES: ['nature', 'entree_contrevaleur', 'sortie_contrevaleur'],
+  A2_DEROGATIONS: ['indication', 'justification', 'influence'],
+  A3: ['nature_changement', 'justification', 'influence'],
 };
 
 router.get('/companies/:companyId/etats-annexes', (req, res) => {
