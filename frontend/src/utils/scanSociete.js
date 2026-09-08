@@ -22,11 +22,21 @@ export function guessIce(text) {
 }
 
 export function guessIfFiscal(text) {
-  return firstMatch(text, /(?:I\.?\s?F\.?|Identifiant\s+Fiscal)\D{0,10}(\d{6,9})/i);
+  return (
+    firstMatch(text, /(?:I\.?\s?F\.?|Identifiant\s+Fiscal)\D{0,10}(\d{6,9})/i) ||
+    // "N° d'identification fiscale 71787856" (attestation fiscale DGI) :
+    // phrasé en toutes lettres, sans l'abréviation "IF".
+    firstMatch(text, /identification\s+fiscale\D{0,10}(\d{6,9})/i)
+  );
 }
 
 export function guessRc(text) {
-  return firstMatch(text, /R\.?\s?C\.?\D{0,10}(\d{1,7})/i);
+  return (
+    firstMatch(text, /R\.?\s?C\.?\D{0,10}(\d{1,7})/i) ||
+    // "N° du registre de commerce 42531" : phrasé en toutes lettres,
+    // sans l'abréviation "RC" (cas de l'attestation fiscale DGI).
+    firstMatch(text, /registre\s+de\s+commerce\D{0,10}(\d{1,7})/i)
+  );
 }
 
 export function guessPatente(text) {
