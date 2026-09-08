@@ -134,6 +134,21 @@ function ImportFacturesBlock() {
       {result && (
         <div style={{ marginTop: 16 }}>
           <div className="alert alert-notice">{result.factures_creees} facture(s) créée(s).</div>
+          {result.doublons && result.doublons.length > 0 && (
+            <>
+              <div className="alert alert-notice" style={{ marginTop: 8 }}>
+                {result.doublons.length} facture(s) ignorée(s) car déjà existante(s) (doublon détecté par n° de facture + tiers).
+              </div>
+              <table className="ledger">
+                <thead><tr><th>Ligne</th><th>Tiers</th><th>N° facture</th></tr></thead>
+                <tbody>
+                  {result.doublons.map((d, i) => (
+                    <tr key={i}><td>{d.ligne}</td><td>{d.tiers}</td><td>{d.facture_numero}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
           {result.erreurs && result.erreurs.length > 0 && (
             <table className="ledger">
               <thead>
