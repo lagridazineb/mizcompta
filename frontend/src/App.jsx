@@ -16,6 +16,7 @@ import SaisiePaiementFournisseur from './pages/SaisiePaiementFournisseur';
 import Cnss from './pages/Cnss';
 import Balance from './pages/Balance';
 import Bilan from './pages/Bilan';
+import EtatVentesClient from './pages/EtatVentesClient';
 import Tva from './pages/Tva';
 import Tiers from './pages/Tiers';
 import Factures from './pages/Factures';
@@ -58,6 +59,7 @@ function PrivateArea() {
             <Route path="/scan" element={<ScanFacture />} />
             <Route path="/convertisseur" element={<Convertisseur />} />
             <Route path="/etats" element={<Bilan />} />
+            <Route path="/etats/ventes-client" element={<EtatVentesClient />} />
             <Route path="/tva" element={<Tva />} />
             <Route path="/plan-comptable" element={<PlanComptable />} />
             <Route path="/journaux" element={<Journaux />} />
