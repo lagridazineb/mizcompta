@@ -61,7 +61,7 @@ export default function EtatVentesClient() {
         <div className="evc-header-text">
           <div className="evc-header-ministere">Ministère de l'Économie et des Finances</div>
           <div className="evc-header-direction">Direction Générale des Impôts</div>
-          <h1>Etat des ventes par client</h1>
+          <h1>Factures Clients</h1>
           <p className="text-muted">(Articles 20 et 82 du Code Général des Impôts)</p>
           <p><strong>Exercice du {formatDateFR(data.exercice.debut)} au {formatDateFR(data.exercice.fin)}</strong></p>
         </div>
