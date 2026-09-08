@@ -142,10 +142,14 @@ export function guessMontantTTC(text, rows) {
   return (
     trouverValeurTableau(rows, /total\s*\(?\s*t\.?\s*t\.?\s*c\.?\s*\)?/i) ??
     trouverValeurTableau(rows, /net\s*(?:a|à)\s*payer/i) ??
+    // Factures d'assurance (AXA, Sanlam...) : le total s'appelle "Prime
+    // totale" plutôt que "Total TTC"/"Net à payer".
+    trouverValeurTableau(rows, /prime\s*totale/i) ??
     montantApresLabel(text, String.raw`total\s*t\.?\s*t\.?\s*c\.?`) ??
     montantApresLabel(text, String.raw`total\s*(?:a|à)\s*payer`) ??
     montantApresLabel(text, String.raw`net\s*(?:a|à)\s*payer`) ??
     montantApresLabel(text, String.raw`montant\s*t\.?t\.?c\.?`) ??
+    montantApresLabel(text, String.raw`prime\s*totale`) ??
     montantApresLabel(text, String.raw`\bt\.?\s*t\.?\s*c\.?\s*:?`)
   );
 }
