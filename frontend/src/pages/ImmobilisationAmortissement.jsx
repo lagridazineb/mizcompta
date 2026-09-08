@@ -6,6 +6,22 @@ import CompanySelectGate from '../components/CompanySelectGate';
 import { formatDateFR, todayISO } from '../utils/dateFr';
 import DateInputFR from '../components/DateInputFR';
 
+// Taux d'amortissement linéaire usuels admis fiscalement au Maroc (Code
+// Général des Impôts) — voir TAUX_D_AMORTISSEMENT.docx. Sert uniquement à
+// préremplir la durée par défaut selon la catégorie choisie ; l'utilisateur
+// garde la main pour la corriger au cas par cas (durée réelle d'usage,
+// accord particulier avec l'administration, etc.).
+const CATEGORIES_AMORTISSEMENT = [
+  { label: 'Constructions (bâtiments)', duree: 25 },
+  { label: 'Matériel et outillage industriel', duree: 10 },
+  { label: 'Matériel de transport', duree: 5 },
+  { label: 'Matériel informatique', duree: 5 },
+  { label: 'Mobilier et matériel de bureau', duree: 10 },
+  { label: 'Agencements et aménagements', duree: 10 },
+  { label: 'Frais préliminaires (frais de constitution)', duree: 5 },
+  { label: 'Logiciels', duree: 5 },
+];
+
 function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
@@ -234,7 +250,25 @@ export default function ImmobilisationAmortissement() {
             </div>
             <div className="field">
               <label>Nature</label>
-              <input value={form.nature} onChange={(e) => update({ nature: e.target.value })} placeholder="Ex : Matériel de transport" disabled={!!savedImmo} />
+              <input
+                list="categories-amortissement-datalist"
+                value={form.nature}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const categorie = CATEGORIES_AMORTISSEMENT.find((c) => c.label === val);
+                  update(categorie ? { nature: val, duree_annees: String(categorie.duree) } : { nature: val });
+                }}
+                placeholder="Ex : Matériel de transport"
+                disabled={!!savedImmo}
+              />
+              <datalist id="categories-amortissement-datalist">
+                {CATEGORIES_AMORTISSEMENT.map((c) => (
+                  <option key={c.label} value={c.label}>{`${c.duree} ans (${round2(100 / c.duree)}%)`}</option>
+                ))}
+              </datalist>
+              <span className="text-muted" style={{ fontSize: 11 }}>
+                Choisissez une catégorie usuelle pour préremplir la durée, ou saisissez librement.
+              </span>
             </div>
             <div className="field">
               <label>Compte immobilisation</label>
