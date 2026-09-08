@@ -231,6 +231,27 @@ function httpError(status, message) {
 // transaction lors d'un import en masse (voir /import/factures plus bas).
 // Retourne juste l'id de l'écriture créée ; createFactureRecord se charge
 // d'ouvrir la transaction, de committer, et de relire l'écriture complète.
+// Détecte si une facture avec le même n° de pièce existe déjà pour le même
+// tiers (client ou fournisseur), tous types de pièce confondus (facture,
+// avoir...). C'est le signal le plus fiable de doublon disponible : deux
+// factures distinctes du même fournisseur portent presque toujours des
+// numéros différents, donc une correspondance exacte tiers + numéro est
+// quasi certainement la même facture saisie/scannée/importée deux fois.
+// On ignore les numéros vides (rien de fiable à comparer dans ce cas).
+function trouverFactureDoublon(companyId, tiersNom, numeroPiece) {
+  const numero = String(numeroPiece || '').trim();
+  if (!numero || !tiersNom) return null;
+  return db
+    .prepare(
+      `SELECT je.id, je.date_ecriture, je.numero_piece
+       FROM journal_entries je
+       JOIN journal_lines jl ON jl.entry_id = je.id
+       WHERE je.company_id = ? AND jl.tiers = ? AND TRIM(je.numero_piece) = ?
+       LIMIT 1`
+    )
+    .get(companyId, tiersNom, numero);
+}
+
 function createFactureRecordCore(companyId, userId, payload) {
   const {
     type, tiers_id, fiscal_year_id, date_facture, numero_piece, libelle,
@@ -444,6 +465,17 @@ function createFactureRecord(companyId, userId, payload) {
 // (Jours -> échéance), et bloc paiement optionnel qui génère l'écriture de règlement liée.
 router.post('/companies/:companyId/factures', (req, res) => {
   try {
+    const { tiers_id, numero_piece, force } = req.body;
+    if (!force && tiers_id && numero_piece) {
+      const tiersRow = db.prepare('SELECT nom FROM tiers WHERE id = ?').get(tiers_id);
+      const doublon = tiersRow && trouverFactureDoublon(req.params.companyId, tiersRow.nom, numero_piece);
+      if (doublon) {
+        return res.status(409).json({
+          doublon: true,
+          error: `Une facture n°${doublon.numero_piece} pour ${tiersRow.nom} existe déjà (écriture du ${doublon.date_ecriture}). Enregistrer quand même ?`,
+        });
+      }
+    }
     const entry = createFactureRecord(req.params.companyId, req.user.id, req.body);
     res.status(201).json(entry);
   } catch (e) {
@@ -579,7 +611,7 @@ router.post('/companies/:companyId/import/factures', require('multer')({ storage
     return tiersRow;
   }
 
-  const results = { factures_creees: 0, erreurs: [] };
+  const results = { factures_creees: 0, erreurs: [], doublons: [] };
   const cfg = CONFIG[type];
 
   // ---------------------------------------------------------------------
@@ -647,6 +679,23 @@ router.post('/companies/:companyId/import/factures', require('multer')({ storage
     const maxEntryId = (db.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM journal_entries').get() || { m: 0 }).m;
     let nextEntryId = maxEntryId + 1;
 
+    // Détection des doublons : une seule requête pour tout le fichier (pas
+    // une par ligne, pour ne pas ralentir un import de plusieurs milliers de
+    // lignes) qui récupère les paires (tiers, n° de pièce) déjà présentes en
+    // base pour cette société. On complète ce Set au fil de l'import pour
+    // détecter aussi les doublons À L'INTÉRIEUR du même fichier (ex. la même
+    // facture scannée deux fois puis exportée deux fois dans le classeur).
+    const signaturesExistantes = new Set(
+      db
+        .prepare(
+          `SELECT LOWER(jl.tiers) AS nom, TRIM(je.numero_piece) AS numero
+           FROM journal_entries je JOIN journal_lines jl ON jl.entry_id = je.id
+           WHERE je.company_id = ? AND TRIM(je.numero_piece) != ''`
+        )
+        .all(companyId)
+        .map((r) => `${r.nom}||${r.numero}`)
+    );
+
     rows.forEach((row, idx) => {
       const dateStr = excelDateToISO(pick(row, 'date'));
       const facture_numero = pick(row, 'facture n°', 'facture n', 'facture', 'numero_piece', 'numero');
@@ -662,6 +711,14 @@ router.post('/companies/:companyId/import/factures', require('multer')({ storage
       if (!dateStr || !clientNom || !montantStr) {
         results.erreurs.push({ ligne: idx + 2, erreur: 'Date, Client et Montant sont requis — ligne ignorée.' });
         return;
+      }
+      if (facture_numero) {
+        const signature = `${clientNom.toLowerCase()}||${facture_numero.trim()}`;
+        if (signaturesExistantes.has(signature)) {
+          results.doublons.push({ ligne: idx + 2, facture_numero, tiers: clientNom, avertissement: `Facture n°${facture_numero} déjà existante pour ${clientNom} — ligne ignorée pour éviter un doublon.` });
+          return;
+        }
+        signaturesExistantes.add(signature);
       }
       const montantSaisiBrut = parseMontantImport(montantStr);
       if (!montantSaisiBrut || Number.isNaN(montantSaisiBrut)) {
@@ -820,6 +877,53 @@ router.delete('/companies/:companyId/factures/:entryId', (req, res) => {
   tx();
 
   res.json({ deleted: true });
+});
+
+// ---------------------------------------------------------------------------
+// Etat des ventes par client (Articles 20 et 82 du Code Général des Impôts) :
+// pour chaque client, le cumul du chiffre d'affaires HT et TTC facturé sur
+// l'exercice. Regroupe les factures de vente par tiers (nom du client),
+// exactement comme l'écran équivalent du logiciel bureau de référence.
+router.get('/companies/:companyId/etat-ventes-client', (req, res) => {
+  const companyId = req.params.companyId;
+  const { fiscal_year_id } = req.query;
+  if (!fiscal_year_id) return res.status(400).json({ error: 'fiscal_year_id est requis.' });
+
+  const company = db.prepare('SELECT * FROM companies WHERE id = ?').get(companyId);
+  if (!company) return res.status(404).json({ error: 'Société introuvable.' });
+  const fiscalYear = db.prepare('SELECT * FROM fiscal_years WHERE id = ? AND company_id = ?').get(fiscal_year_id, companyId);
+  if (!fiscalYear) return res.status(404).json({ error: 'Exercice introuvable.' });
+
+  const factures = getFacturesAvecDetails(companyId, 'vente').filter((f) => f.fiscal_year_id === Number(fiscal_year_id));
+
+  const parClient = new Map(); // nom client -> { nom, ice, ht, ttc }
+  for (const facture of factures) {
+    const tiersLigne = facture.lignes.find((l) => l.tiers);
+    if (!tiersLigne) continue;
+    const nom = tiersLigne.tiers;
+    const ttc = round2(tiersLigne.debit || 0);
+    const montantTva = round2(
+      facture.lignes.filter((l) => l.taux_tva).reduce((s, l) => s + (l.credit || 0) - (l.debit || 0), 0)
+    );
+    const ht = round2(ttc - montantTva);
+
+    if (!parClient.has(nom)) {
+      const tiersRow = db.prepare('SELECT ice FROM tiers WHERE company_id = ? AND type = ? AND nom = ?').get(companyId, 'client', nom);
+      parClient.set(nom, { nom, ice: tiersRow?.ice || '', ht: 0, ttc: 0 });
+    }
+    const acc = parClient.get(nom);
+    acc.ht = round2(acc.ht + ht);
+    acc.ttc = round2(acc.ttc + ttc);
+  }
+
+  const clients = Array.from(parClient.values()).sort((a, b) => a.nom.localeCompare(b.nom));
+  res.json({
+    company: { raison_sociale: company.raison_sociale, if_fiscal: company.if_fiscal, ice: company.ice },
+    exercice: { debut: fiscalYear.date_debut, fin: fiscalYear.date_fin },
+    clients,
+    total_ht: round2(clients.reduce((s, c) => s + c.ht, 0)),
+    total_ttc: round2(clients.reduce((s, c) => s + c.ttc, 0)),
+  });
 });
 
 module.exports = router;
