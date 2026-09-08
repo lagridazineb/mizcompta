@@ -256,6 +256,7 @@ export const api = {
   getTiersSolde: (companyId, id) => request(`/companies/${companyId}/tiers/${id}/solde`),
 
   getFactures: (companyId, type) => request(`/companies/${companyId}/factures?type=${type}`),
+  getEtatVentesClient: (companyId, fiscalYearId) => request(`/companies/${companyId}/etat-ventes-client?fiscal_year_id=${fiscalYearId}`),
   createFacture: (companyId, payload) => request(`/companies/${companyId}/factures`, { method: 'POST', body: payload }),
   deleteFacture: (companyId, entryId) => request(`/companies/${companyId}/factures/${entryId}`, { method: 'DELETE' }),
 
