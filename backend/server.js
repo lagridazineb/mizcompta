@@ -1,6 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
 
 const { isNewDatabase } = require('./config/db');
 
@@ -47,6 +49,25 @@ app.use('/api', etatsAnnexesRoutes);
 app.use('/api', paiementsRoutes);
 app.use('/api', immobilisationsRoutes);
 
+// Application de bureau (Electron) / usage local : si le frontend a été
+// compilé (frontend/dist présent, via "npm run build"), on le sert
+// directement depuis ce même serveur Express. Cela permet d'ouvrir toute
+// l'application (interface + API) depuis une seule adresse
+// http://localhost:PORT, sans backend distant (Render) ni base cloud
+// (Turso) — utile pour une installation 100% locale sur un poste.
+// N'a aucun effet sur le déploiement web habituel (Render), où ce dossier
+// n'existe simplement pas puisque le frontend y est déployé séparément.
+const frontendDist = path.join(__dirname, '..', 'frontend', 'dist');
+if (fs.existsSync(frontendDist)) {
+  app.use(express.static(frontendDist));
+  // Toute route qui n'est ni /api/... ni un fichier statique existant
+  // renvoie index.html, pour laisser React Router gérer la navigation
+  // côté client (rechargement de page sur /companies, /entries, etc.).
+  app.get(/^\/(?!api\/).*/, (req, res) => {
+    res.sendFile(path.join(frontendDist, 'index.html'));
+  });
+}
+
 // Gestion d'erreurs générique
 app.use((err, req, res, next) => {
   console.error('[Erreur non gérée]', err);
@@ -58,7 +79,7 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   if (isNewDatabase) {
-    console.log('Nouvelle base de données créée dans backend/data/megacompta.db');
+    console.log(`Nouvelle base de données créée dans ${process.env.DB_PATH || 'backend/data/megacompta.db'}`);
   }
   console.log(`API MizCompta démarrée sur http://localhost:${PORT}`);
 });
